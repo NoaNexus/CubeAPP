@@ -12,6 +12,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -76,6 +79,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -88,6 +92,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -97,6 +102,7 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -604,15 +610,21 @@ class CubeTraceViewModel(application: Application) : AndroidViewModel(applicatio
             ?: CubeState.solved().asFacelets()
         if (facelets == stateBeforeMove) {
             smartRecoveryMoves.clear()
+            val scrambleComplete = smartEventCursor >= smartExpectedStates.size && smartExpectedStates.isNotEmpty()
+            val completedTokens = smartEventTokenEnds.count { it < smartEventCursor }
             _timer.value = currentTimer.copy(
-                smartPhase = if (smartEventCursor == 0) {
-                    SmartScramblePhase.READY_TO_SCRAMBLE
-                } else {
-                    SmartScramblePhase.SCRAMBLING
+                smartScrambleProgress = completedTokens,
+                smartPhase = when {
+                    scrambleComplete -> SmartScramblePhase.READY_TO_INSPECT
+                    smartEventCursor == 0 -> SmartScramblePhase.READY_TO_SCRAMBLE
+                    else -> SmartScramblePhase.SCRAMBLING
                 },
                 smartError = null,
                 smartCorrection = null
             )
+            if (scrambleComplete && settings.value.smartAutoInspectionEnabled) {
+                startSmartInspection()
+            }
             return
         }
 
@@ -952,7 +964,12 @@ private fun CubeTraceApp(viewModel: CubeTraceViewModel) {
     var deviceOpen by remember { mutableStateOf(false) }
     var formulaHeaderCompact by remember { mutableStateOf(false) }
     val context = LocalContext.current
+    val rootView = LocalView.current
     var snackbar by remember { mutableStateOf("") }
+    DisposableEffect(section) {
+        rootView.keepScreenOn = section == AppSection.TIMER
+        onDispose { rootView.keepScreenOn = false }
+    }
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
@@ -1125,18 +1142,31 @@ private fun CubeTraceTopBar(
     onSettings: () -> Unit,
     compact: Boolean = false
 ) {
-    if (compact) {
-        Row(
-            modifier = Modifier.fillMaxWidth().height(48.dp).background(CubeTraceColors.mist).padding(horizontal = 16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            CubeTraceBrandMark(modifier = Modifier.size(28.dp))
-            Text(section.label, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, modifier = Modifier.padding(start = 10.dp))
-            Spacer(Modifier.weight(1f))
-            IconButton(onClick = onSettings) { SettingsGlyph() }
-        }
-    } else {
+    val expandedAlpha by animateFloatAsState(
+        targetValue = if (compact) 0f else 1f,
+        animationSpec = tween(durationMillis = 220),
+        label = "formula_header_expanded_alpha"
+    )
+    val compactAlpha by animateFloatAsState(
+        targetValue = if (compact) 1f else 0f,
+        animationSpec = tween(durationMillis = 220),
+        label = "formula_header_compact_alpha"
+    )
+    val barHeight by animateDpAsState(
+        targetValue = if (compact) 48.dp else 64.dp,
+        animationSpec = tween(durationMillis = 220),
+        label = "formula_header_height"
+    )
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(barHeight)
+            .background(CubeTraceColors.mist)
+            .clipToBounds()
+    ) {
         TopAppBar(
+            modifier = Modifier.fillMaxWidth().height(64.dp).alpha(expandedAlpha),
             navigationIcon = { CubeTraceBrandMark(modifier = Modifier.padding(start = 16.dp)) },
             title = {
                 Column {
@@ -1152,6 +1182,15 @@ private fun CubeTraceTopBar(
             },
             colors = TopAppBarDefaults.topAppBarColors(containerColor = CubeTraceColors.mist, scrolledContainerColor = CubeTraceColors.mist)
         )
+        Row(
+            modifier = Modifier.fillMaxWidth().height(48.dp).alpha(compactAlpha).padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            CubeTraceBrandMark(modifier = Modifier.size(28.dp))
+            Text(section.label, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, modifier = Modifier.padding(start = 10.dp))
+            Spacer(Modifier.weight(1f))
+            IconButton(onClick = onSettings) { SettingsGlyph() }
+        }
     }
 }
 
@@ -1275,7 +1314,7 @@ private fun FormulaScreen(
 
     Box(modifier = Modifier.fillMaxSize()) {
         LazyVerticalGrid(
-            columns = GridCells.Adaptive(164.dp),
+            columns = GridCells.Fixed(2),
             state = gridState,
             modifier = Modifier.fillMaxSize().padding(horizontal = 18.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
