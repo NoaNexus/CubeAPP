@@ -1,0 +1,21 @@
+presetVersion: yellow-top-blue-front-0.3.0
+status: curated-reference-pack
+source:
+  - id: pycube-solver
+    url: https://github.com/saiakarsh193/PyCube-Solver
+    license: MIT
+    usage: OLL and PLL reference sequences; normalized into the app notation parser.
+  - id: rubiksplace-f2l
+    url: https://www.rubiksplace.com/speedcubing/F2L-algorithms/
+    usage: 41 basic F2L reference sequences; only notation text was transcribed.
+verifiedBy: CubeEngine parser, inverse-state generation, and source-pack count checks
+humanReview: curated for yellow-top/blue-front; physical device facelet mapping remains a separate hardware acceptance check
+caseCounts:
+  F2L: 41
+  OLL: 57
+  PLL: 21
+notes:
+  - Stable IDs are frozen as cfop.<stage>.<number>.
+  - Canonical states are generated from inverse notation.
+  - The app uses yellow on U, blue on F, white Cross on D; the six paint colors follow the existing visual design system.
+  - Parentheses are removed because they do not change execution; lower-case face moves are parsed as wide turns.
