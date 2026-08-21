@@ -419,6 +419,38 @@ private fun normalizeReferenceFrame(facelets: String): String {
     return facelets
 }
 
+/**
+ * Reorients an observed solve so its detected Cross is on D, then relabels
+ * sticker colors by the centers in that view. Four frames are returned (the
+ * possible fronts around the Cross axis). This is intended for recognition
+ * signatures only; it does not alter the saved solve or the live cube view.
+ */
+fun normalizedCfopFrames(facelets: String, crossFace: Char): List<String> {
+    val source = CubeState.fromFacelets(facelets) ?: return emptyList()
+    val faceIndex = "URFDLB".indexOf(crossFace.uppercaseChar())
+    if (faceIndex < 0) return emptyList()
+    val crossCenterColor = facelets.getOrNull(faceIndex * 9 + 4) ?: return emptyList()
+    return referenceFrameRotations.mapNotNull { path ->
+        var candidate = source
+        path.forEach { move -> candidate = candidate.apply(move) }
+        val rotated = candidate.asFacelets()
+        if (rotated.getOrNull(31) != crossCenterColor) return@mapNotNull null
+        normalizeColorsByCenters(rotated)
+    }.distinct()
+}
+
+private fun normalizeColorsByCenters(facelets: String): String? {
+    if (facelets.length != 54) return null
+    val faces = "URFDLB"
+    val colorToFace = faces.indices.associate { index ->
+        (facelets.getOrNull(index * 9 + 4) ?: return null) to faces[index]
+    }
+    if (colorToFace.size != 6) return null
+    return buildString(54) {
+        facelets.forEach { color -> append(colorToFace[color] ?: return null) }
+    }
+}
+
 private val pllSolvedPieceColorSets: Set<Set<Char>> by lazy {
     StickerGeometry.descriptors
         .mapIndexed { index, descriptor -> index to descriptor }
@@ -551,6 +583,155 @@ private fun topLayerIsSolvedRelativeToCenters(facelets: String): Boolean {
     return listOf(9, 18, 36, 45).all { faceStart ->
         val center = facelets.getOrNull(faceStart + 4) ?: return@all false
         (0..2).all { offset -> facelets.getOrNull(faceStart + offset) == center }
+    }
+}
+
+/** Public CFOP predicates used by the offline solve analyzer. */
+fun isCrossSolved(facelets: String): Boolean {
+    if (!isValidStageFacelets(facelets)) return false
+    val normalized = normalizeReferenceFrame(facelets)
+    return crossEdgePositions.all { isSolvedAt(normalized, cubieAt(it)) }
+}
+
+fun isF2lSlotSolved(facelets: String, slot: Int): Boolean {
+    if (!isValidStageFacelets(facelets) || slot !in 0..3) return false
+    val normalized = normalizeReferenceFrame(facelets)
+    val positions = when (slot) {
+        0 -> f2lCornerPosition to f2lEdgePosition
+        1 -> f2lOtherSlotPositions[0]
+        2 -> f2lOtherSlotPositions[1]
+        else -> f2lOtherSlotPositions[2]
+    }
+    return isSolvedAt(normalized, cubieAt(positions.first)) &&
+        isSolvedAt(normalized, cubieAt(positions.second))
+}
+
+fun f2lSolvedSlots(facelets: String): Set<Int> =
+    (0..3).filterTo(mutableSetOf()) { isF2lSlotSolved(facelets, it) }
+
+fun isF2lSolved(facelets: String): Boolean =
+    isCrossSolved(facelets) && f2lSolvedSlots(facelets).size == 4
+
+fun isLastLayerOriented(facelets: String): Boolean {
+    if (!isValidStageFacelets(facelets)) return false
+    return topFaceIsOriented(normalizeReferenceFrame(facelets))
+}
+
+/*
+ * CFOP analysis must not assume that the cross is always the D face.  The
+ * timer's physical frame can be white/green, yellow/blue, or another valid
+ * whole-cube orientation.  These predicates compare stickers with the center
+ * currently occupying each face, so they keep the cubie logic intact while
+ * making the selected cross face explicit.
+ */
+private const val CFOP_FACE_ORDER = "URFDLB"
+
+private fun faceNormal(face: Char): Vec3? = when (face.uppercase().firstOrNull()) {
+    'U' -> Vec3(0, 1, 0)
+    'R' -> Vec3(1, 0, 0)
+    'F' -> Vec3(0, 0, 1)
+    'D' -> Vec3(0, -1, 0)
+    'L' -> Vec3(-1, 0, 0)
+    'B' -> Vec3(0, 0, -1)
+    else -> null
+}
+
+private fun oppositeFace(face: Char): Char = when (face.uppercase().first()) {
+    'U' -> 'D'
+    'D' -> 'U'
+    'R' -> 'L'
+    'L' -> 'R'
+    'F' -> 'B'
+    else -> 'F'
+}
+
+private fun isEdgePosition(position: Vec3): Boolean =
+    listOf(position.x, position.y, position.z).count { abs(it) == 1 } == 2
+
+private fun isCornerPosition(position: Vec3): Boolean =
+    listOf(position.x, position.y, position.z).all { abs(it) == 1 }
+
+private fun faceForNormal(normal: Vec3): Char? = when {
+    normal.y == 1 -> 'U'
+    normal.x == 1 -> 'R'
+    normal.z == 1 -> 'F'
+    normal.y == -1 -> 'D'
+    normal.x == -1 -> 'L'
+    normal.z == -1 -> 'B'
+    else -> null
+}
+
+/** A solved cubie is defined by the centers, not by hard-coded U/R/F colors. */
+private fun isSolvedRelativeToCenters(facelets: String, cubie: CubieGroup?): Boolean =
+    cubie != null && cubie.stickerIndexes.all { stickerIndex ->
+        val face = faceForNormal(StickerGeometry.descriptors[stickerIndex].normal) ?: return@all false
+        val centerIndex = CFOP_FACE_ORDER.indexOf(face) * 9 + 4
+        facelets.getOrNull(stickerIndex) == facelets.getOrNull(centerIndex)
+    }
+
+private fun crossEdgePositions(face: Char): List<Vec3> {
+    val normal = faceNormal(face) ?: return emptyList()
+    return cubieGroups.asSequence()
+        .map { it.position }
+        .filter { isEdgePosition(it) && it.dot(normal) == 1 }
+        .sortedWith(compareBy<Vec3> { it.x }.thenBy { it.y }.thenBy { it.z })
+        .toList()
+}
+
+private fun f2lSlotPositions(face: Char): List<Pair<Vec3, Vec3>> {
+    val normal = faceNormal(face) ?: return emptyList()
+    return cubieGroups.asSequence()
+        .map { it.position }
+        .filter { isCornerPosition(it) && it.dot(normal) == 1 }
+        .sortedWith(compareBy<Vec3> { it.x }.thenBy { it.y }.thenBy { it.z })
+        .map { corner ->
+            val edge = when {
+                normal.x != 0 -> Vec3(0, corner.y, corner.z)
+                normal.y != 0 -> Vec3(corner.x, 0, corner.z)
+                else -> Vec3(corner.x, corner.y, 0)
+            }
+            corner to edge
+        }
+        .toList()
+}
+
+/** Returns all possible cross faces for orientation-independent CFOP analysis. */
+fun cfopCrossFaces(): List<Char> = CFOP_FACE_ORDER.toList()
+
+fun isCrossSolvedOn(facelets: String, crossFace: Char): Boolean {
+    if (!isValidStageFacelets(facelets) || faceNormal(crossFace) == null) return false
+    return crossEdgePositions(crossFace).all { isSolvedRelativeToCenters(facelets, cubieAt(it)) }
+}
+
+fun isF2lSlotSolvedOn(facelets: String, crossFace: Char, slot: Int): Boolean {
+    if (!isValidStageFacelets(facelets) || slot !in 0..3) return false
+    val pair = f2lSlotPositions(crossFace).getOrNull(slot) ?: return false
+    return isSolvedRelativeToCenters(facelets, cubieAt(pair.first)) &&
+        isSolvedRelativeToCenters(facelets, cubieAt(pair.second))
+}
+
+fun f2lSolvedSlotsOn(facelets: String, crossFace: Char): Set<Int> =
+    (0..3).filterTo(mutableSetOf()) { isF2lSlotSolvedOn(facelets, crossFace, it) }
+
+fun isF2lSolvedOn(facelets: String, crossFace: Char): Boolean =
+    isCrossSolvedOn(facelets, crossFace) && f2lSolvedSlotsOn(facelets, crossFace).size == 4
+
+fun isLastLayerOrientedOn(facelets: String, crossFace: Char): Boolean {
+    if (!isValidStageFacelets(facelets)) return false
+    val lastLayerFace = oppositeFace(crossFace)
+    val start = CFOP_FACE_ORDER.indexOf(lastLayerFace) * 9
+    if (start < 0) return false
+    val center = facelets.getOrNull(start + 4) ?: return false
+    return (start until start + 9).all { facelets.getOrNull(it) == center }
+}
+
+/** Solved up to a whole-cube regrip: every face is uniform around its center. */
+fun isCubeSolvedRelativeToCenters(facelets: String): Boolean {
+    if (!isValidStageFacelets(facelets)) return false
+    return CFOP_FACE_ORDER.indices.all { faceIndex ->
+        val start = faceIndex * 9
+        val center = facelets[start + 4]
+        (start until start + 9).all { facelets[it] == center }
     }
 }
 

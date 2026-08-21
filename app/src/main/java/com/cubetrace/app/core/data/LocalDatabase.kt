@@ -13,13 +13,14 @@ import com.cubetrace.app.core.model.Completeness
 import com.cubetrace.app.core.model.CubeCase
 import com.cubetrace.app.core.model.Penalty
 import com.cubetrace.app.core.model.RecordedMove
+import com.cubetrace.app.core.model.MoveTimeQuality
 import com.cubetrace.app.core.model.SolveRecord
 import com.cubetrace.app.core.model.SolveSource
 import com.cubetrace.app.core.model.Stage
 import java.util.UUID
 
 private const val DATABASE_NAME = "cubetrace.db"
-private const val DATABASE_VERSION = 14
+private const val DATABASE_VERSION = 15
 
 private class CubeTraceDb(context: Context) : SQLiteOpenHelper(
     context,
@@ -83,7 +84,12 @@ private class CubeTraceDb(context: Context) : SQLiteOpenHelper(
                 penalty TEXT NOT NULL,
                 source TEXT NOT NULL,
                 completeness TEXT NOT NULL,
-                notes TEXT NOT NULL DEFAULT ''
+                notes TEXT NOT NULL DEFAULT '',
+                start_facelets TEXT,
+                end_facelets TEXT,
+                start_sequence INTEGER,
+                end_sequence INTEGER,
+                cross_face TEXT NOT NULL DEFAULT 'D'
             )
             """.trimIndent()
         )
@@ -96,6 +102,9 @@ private class CubeTraceDb(context: Context) : SQLiteOpenHelper(
                 elapsed_ms INTEGER NOT NULL,
                 sequence INTEGER,
                 gap INTEGER NOT NULL DEFAULT 0,
+                device_time_ms INTEGER,
+                received_at_elapsed_ms INTEGER,
+                time_quality TEXT NOT NULL DEFAULT 'UNKNOWN',
                 PRIMARY KEY(solve_id, ordinal),
                 FOREIGN KEY(solve_id) REFERENCES solve(id) ON DELETE CASCADE
             )
@@ -118,6 +127,21 @@ private class CubeTraceDb(context: Context) : SQLiteOpenHelper(
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 14) migratePresetContent(db)
+        if (oldVersion < 15) migrateSolveEvidence(db)
+    }
+
+    private fun migrateSolveEvidence(db: SQLiteDatabase) {
+        // These are additive, nullable/defaulted columns so existing formula,
+        // solve and user-state rows remain readable.  Old solves deliberately
+        // keep null checkpoints and are treated as analysis-incomplete.
+        db.execSQL("ALTER TABLE solve ADD COLUMN start_facelets TEXT")
+        db.execSQL("ALTER TABLE solve ADD COLUMN end_facelets TEXT")
+        db.execSQL("ALTER TABLE solve ADD COLUMN start_sequence INTEGER")
+        db.execSQL("ALTER TABLE solve ADD COLUMN end_sequence INTEGER")
+        db.execSQL("ALTER TABLE solve ADD COLUMN cross_face TEXT NOT NULL DEFAULT 'D'")
+        db.execSQL("ALTER TABLE move_event ADD COLUMN device_time_ms INTEGER")
+        db.execSQL("ALTER TABLE move_event ADD COLUMN received_at_elapsed_ms INTEGER")
+        db.execSQL("ALTER TABLE move_event ADD COLUMN time_quality TEXT NOT NULL DEFAULT 'UNKNOWN'")
     }
 
     private fun migratePresetContent(db: SQLiteDatabase) {
@@ -428,6 +452,11 @@ class LocalRepository(context: Context) {
                 put("source", record.source.name)
                 put("completeness", record.completeness.name)
                 put("notes", record.notes)
+                record.startFacelets?.let { put("start_facelets", it) }
+                record.endFacelets?.let { put("end_facelets", it) }
+                record.startSequence?.let { put("start_sequence", it) }
+                record.endSequence?.let { put("end_sequence", it) }
+                put("cross_face", record.crossFace.toString())
             }
             db.insertOrThrow("solve", null, values)
             record.moves.forEach { move ->
@@ -438,6 +467,9 @@ class LocalRepository(context: Context) {
                     put("elapsed_ms", move.elapsedMs)
                     move.sequence?.let { put("sequence", it) }
                     put("gap", if (move.gap) 1 else 0)
+                    move.deviceTimeMs?.let { put("device_time_ms", it) }
+                    move.receivedAtElapsedMs?.let { put("received_at_elapsed_ms", it) }
+                    put("time_quality", move.timeQuality.name)
                 }
                 db.insertOrThrow("move_event", null, moveValues)
             }
@@ -450,7 +482,7 @@ class LocalRepository(context: Context) {
 
     fun listSolves(limit: Int = 200): List<SolveRecord> {
         val db = helper.readableDatabase
-        return db.rawQuery(
+        val solves = db.rawQuery(
             "SELECT * FROM solve ORDER BY started_at DESC LIMIT ?",
             arrayOf(limit.toString())
         ).use { cursor ->
@@ -469,12 +501,20 @@ class LocalRepository(context: Context) {
                             source = enumValue<SolveSource>(cursor.getString(cursor.getColumnIndexOrThrow("source")), SolveSource.MANUAL),
                             completeness = enumValue<Completeness>(cursor.getString(cursor.getColumnIndexOrThrow("completeness")), Completeness.COMPLETE),
                             notes = cursor.getString(cursor.getColumnIndexOrThrow("notes")),
-                            moves = loadMoves(db, solveId)
+                            startFacelets = cursor.getStringOrNull("start_facelets"),
+                            endFacelets = cursor.getStringOrNull("end_facelets"),
+                            startSequence = cursor.getIntOrNull("start_sequence"),
+                            endSequence = cursor.getIntOrNull("end_sequence"),
+                            crossFace = cursor.getStringOrNull("cross_face")?.firstOrNull() ?: 'D',
+                            moves = emptyList()
                         )
                     )
                 }
             }
         }
+        if (solves.isEmpty()) return solves
+        val movesBySolve = loadMovesForSolves(db, solves.map { it.id })
+        return solves.map { solve -> solve.copy(moves = movesBySolve[solve.id].orEmpty()) }
     }
 
     fun updatePenalty(id: String, penalty: Penalty) {
@@ -550,7 +590,7 @@ class LocalRepository(context: Context) {
     }
 
     private fun loadMoves(db: SQLiteDatabase, solveId: String): List<RecordedMove> = db.rawQuery(
-        "SELECT ordinal, move_code, elapsed_ms, sequence, gap FROM move_event WHERE solve_id = ? ORDER BY ordinal",
+        "SELECT ordinal, move_code, elapsed_ms, sequence, gap, device_time_ms, received_at_elapsed_ms, time_quality FROM move_event WHERE solve_id = ? ORDER BY ordinal",
         arrayOf(solveId)
     ).use { cursor ->
         buildList {
@@ -561,11 +601,46 @@ class LocalRepository(context: Context) {
                         code = cursor.getString(1),
                         elapsedMs = cursor.getLong(2),
                         sequence = if (cursor.isNull(3)) null else cursor.getInt(3),
-                        gap = cursor.getInt(4) == 1
+                        gap = cursor.getInt(4) == 1,
+                        deviceTimeMs = if (cursor.isNull(5)) null else cursor.getLong(5),
+                        receivedAtElapsedMs = if (cursor.isNull(6)) null else cursor.getLong(6),
+                        timeQuality = enumValue(cursor.getString(7), MoveTimeQuality.UNKNOWN)
                     )
                 )
             }
         }
+    }
+
+    /** Loads list-row move facts in bounded batches instead of one query per solve. */
+    private fun loadMovesForSolves(
+        db: SQLiteDatabase,
+        solveIds: List<String>
+    ): Map<String, List<RecordedMove>> {
+        val result = solveIds.associateWith { mutableListOf<RecordedMove>() }.toMutableMap()
+        solveIds.chunked(400).forEach { chunk ->
+            val placeholders = chunk.joinToString(",") { "?" }
+            db.rawQuery(
+                "SELECT solve_id, ordinal, move_code, elapsed_ms, sequence, gap, device_time_ms, received_at_elapsed_ms, time_quality " +
+                    "FROM move_event WHERE solve_id IN ($placeholders) ORDER BY solve_id, ordinal",
+                chunk.toTypedArray()
+            ).use { cursor ->
+                while (cursor.moveToNext()) {
+                    result.getOrPut(cursor.getString(0)) { mutableListOf() }.add(
+                        RecordedMove(
+                            ordinal = cursor.getInt(1),
+                            code = cursor.getString(2),
+                            elapsedMs = cursor.getLong(3),
+                            sequence = if (cursor.isNull(4)) null else cursor.getInt(4),
+                            gap = cursor.getInt(5) == 1,
+                            deviceTimeMs = if (cursor.isNull(6)) null else cursor.getLong(6),
+                            receivedAtElapsedMs = if (cursor.isNull(7)) null else cursor.getLong(7),
+                            timeQuality = enumValue(cursor.getString(8), MoveTimeQuality.UNKNOWN)
+                        )
+                    )
+                }
+            }
+        }
+        return result
     }
 
     private fun android.database.Cursor.toAlgorithmVariant(): AlgorithmVariant = AlgorithmVariant(
@@ -609,6 +684,12 @@ class LocalRepository(context: Context) {
         )
     }
 }
+
+private fun android.database.Cursor.getStringOrNull(column: String): String? =
+    getColumnIndex(column).takeIf { it >= 0 }?.let { index -> if (isNull(index)) null else getString(index) }
+
+private fun android.database.Cursor.getIntOrNull(column: String): Int? =
+    getColumnIndex(column).takeIf { it >= 0 }?.let { index -> if (isNull(index)) null else getInt(index) }
 
 private inline fun <reified T : Enum<T>> enumValue(value: String, fallback: T): T =
     runCatching { enumValueOf<T>(value) }.getOrDefault(fallback)

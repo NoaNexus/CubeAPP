@@ -17,14 +17,18 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.cubetrace.app.core.cube.CubeState
 import com.cubetrace.app.core.cube.MoveParser
 import com.cubetrace.app.core.cube.moyuFaceletsToYellowTopBlueFront
 import com.cubetrace.app.core.cube.moyuMoveToYellowTopBlueFront
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
 import java.util.ArrayDeque
 import java.util.UUID
 import kotlin.math.acos
@@ -63,6 +67,24 @@ data class DeviceLiveState(
     val synced: Boolean = false
 )
 
+/**
+ * An accepted A5 packet, or an explicit gap that was refused and is awaiting
+ * an authoritative A3 snapshot.  This stream is the source of truth for
+ * solve recording; Compose may skip UI snapshots, but it must never skip one
+ * of these events.
+ */
+data class DeviceMoveEvent(
+    val sequence: Int,
+    val previousSequence: Int?,
+    val moves: List<String>,
+    val deviceTimeMs: Long?,
+    val receivedAtElapsedMs: Long,
+    val beforeFacelets: String?,
+    val afterFacelets: String?,
+    val gap: Boolean = false,
+    val gapReason: String? = null
+)
+
 class V10DeviceManager(private val context: Context) {
     private val bluetoothManager = context.getSystemService(BluetoothManager::class.java)
     private val adapter: BluetoothAdapter? get() = bluetoothManager?.adapter
@@ -76,6 +98,8 @@ class V10DeviceManager(private val context: Context) {
     val messages: StateFlow<List<V10Message>> = _messages
     private val _liveState = MutableStateFlow(DeviceLiveState())
     val liveState: StateFlow<DeviceLiveState> = _liveState
+    private val moveEventChannel = Channel<DeviceMoveEvent>(Channel.UNLIMITED)
+    val moveEvents: Flow<DeviceMoveEvent> = moveEventChannel.receiveAsFlow()
 
     private var currentGatt: BluetoothGatt? = null
     private var currentDevice: BluetoothDevice? = null
@@ -589,6 +613,7 @@ class V10DeviceManager(private val context: Context) {
     }
 
     private fun handleMove(message: V10Message.Move) {
+        val receivedAtElapsedMs = SystemClock.elapsedRealtime()
         if (faceletResyncPending) return
         val previousSequence = lastSequence
         if (previousSequence == null || cubeState == null) {
@@ -603,6 +628,14 @@ class V10DeviceManager(private val context: Context) {
         // the valid state with another recovery cycle.
         if (difference == 0 || difference > 128) return
         if (difference !in 1..message.moves.size) {
+            emitMoveGap(
+                sequence = message.sequence,
+                previousSequence = previousSequence,
+                deviceTimeMs = message.deviceOffsetMs.toLong(),
+                receivedAtElapsedMs = receivedAtElapsedMs,
+                beforeFacelets = previousFacelets,
+                reason = "动作序号中断"
+            )
             requestFaceletsForResync("动作序号中断，正在重新同步")
             return
         }
@@ -612,6 +645,14 @@ class V10DeviceManager(private val context: Context) {
         // slot is present. A missing slot means the authoritative A3 snapshot
         // is safer than guessing.
         if (window.any { it == null }) {
+            emitMoveGap(
+                sequence = message.sequence,
+                previousSequence = previousSequence,
+                deviceTimeMs = message.deviceOffsetMs.toLong(),
+                receivedAtElapsedMs = receivedAtElapsedMs,
+                beforeFacelets = previousFacelets,
+                reason = "动作历史不完整"
+            )
             requestFaceletsForResync("动作历史不完整，正在重新同步")
             return
         }
@@ -627,6 +668,14 @@ class V10DeviceManager(private val context: Context) {
         for (notation in appliedMoves) {
             val parsed = MoveParser.parseOrEmpty(notation)
             if (parsed.size != 1) {
+                emitMoveGap(
+                    sequence = message.sequence,
+                    previousSequence = previousSequence,
+                    deviceTimeMs = message.deviceOffsetMs.toLong(),
+                    receivedAtElapsedMs = receivedAtElapsedMs,
+                    beforeFacelets = previousFacelets,
+                    reason = "动作无法解析"
+                )
                 requestFaceletsForResync("动作数据无法识别，正在重新同步")
                 return
             }
@@ -643,7 +692,41 @@ class V10DeviceManager(private val context: Context) {
             animationFromFacelets = if (animatedMove != null) previousFacelets else null,
             synced = true
         )
+        moveEventChannel.trySend(
+            DeviceMoveEvent(
+                sequence = message.sequence,
+                previousSequence = previousSequence,
+                moves = appliedMoves,
+                deviceTimeMs = message.deviceOffsetMs.toLong(),
+                receivedAtElapsedMs = receivedAtElapsedMs,
+                beforeFacelets = previousFacelets,
+                afterFacelets = nextState.asFacelets()
+            )
+        )
         scheduleFaceletReconciliation()
+    }
+
+    private fun emitMoveGap(
+        sequence: Int,
+        previousSequence: Int?,
+        deviceTimeMs: Long?,
+        receivedAtElapsedMs: Long,
+        beforeFacelets: String?,
+        reason: String
+    ) {
+        moveEventChannel.trySend(
+            DeviceMoveEvent(
+                sequence = sequence,
+                previousSequence = previousSequence,
+                moves = emptyList(),
+                deviceTimeMs = deviceTimeMs,
+                receivedAtElapsedMs = receivedAtElapsedMs,
+                beforeFacelets = beforeFacelets,
+                afterFacelets = null,
+                gap = true,
+                gapReason = reason
+            )
+        )
     }
 
     private fun updateOrientation(raw: Quaternion) {

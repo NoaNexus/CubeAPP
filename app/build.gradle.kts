@@ -1,7 +1,16 @@
+import org.gradle.api.tasks.testing.Test
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+}
+
+// The dependency-free analysis regression runner is invoked directly from
+// the JVM harness. Keep the Android test task useful for future JUnit tests
+// without making an empty framework test source set fail the build today.
+tasks.withType<Test>().configureEach {
+    failOnNoDiscoveredTests = false
 }
 
 android {
@@ -12,8 +21,8 @@ android {
         applicationId = "com.cubetrace.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 4
+        versionName = "0.2.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true

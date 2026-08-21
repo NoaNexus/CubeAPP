@@ -31,6 +31,14 @@ enum class Completeness(val label: String) {
     INCOMPLETE("不完整")
 }
 
+/** The source quality of a recorded move timestamp. */
+enum class MoveTimeQuality {
+    DEVICE,
+    RECEIVE,
+    ESTIMATED,
+    UNKNOWN
+}
+
 enum class TrainingResult(val label: String) {
     WRONG("没认出"),
     HESITANT("迟疑"),
@@ -80,7 +88,12 @@ data class RecordedMove(
     val code: String,
     val elapsedMs: Long,
     val sequence: Int? = null,
-    val gap: Boolean = false
+    val gap: Boolean = false,
+    /** Device-side timestamp/offset when the protocol exposes one. */
+    val deviceTimeMs: Long? = null,
+    /** Monotonic receive timestamp, kept separate from solve-relative elapsedMs. */
+    val receivedAtElapsedMs: Long? = null,
+    val timeQuality: MoveTimeQuality = MoveTimeQuality.UNKNOWN
 )
 
 data class SolveRecord(
@@ -94,7 +107,15 @@ data class SolveRecord(
     val source: SolveSource = SolveSource.MANUAL,
     val completeness: Completeness = Completeness.COMPLETE,
     val notes: String = "",
-    val moves: List<RecordedMove> = emptyList()
+    val moves: List<RecordedMove> = emptyList(),
+    /** Canonical app-frame facelets at the first physical move. */
+    val startFacelets: String? = null,
+    /** Canonical app-frame facelets at solve completion. */
+    val endFacelets: String? = null,
+    val startSequence: Int? = null,
+    val endSequence: Int? = null,
+    /** Cross face in the canonical app frame; white is D by default. */
+    val crossFace: Char = 'D'
 )
 
 data class AppSettings(
@@ -108,7 +129,8 @@ data class AppSettings(
     val soundEnabled: Boolean = false,
     val gyroFollowEnabled: Boolean = true,
     val smartCubeFrame: SmartCubeFrame = SmartCubeFrame.OFFICIAL_WHITE_GREEN,
-    val smartAutoInspectionEnabled: Boolean = false
+    val smartAutoInspectionEnabled: Boolean = false,
+    val recordChaseHintsEnabled: Boolean = true
 )
 
 enum class SmartCubeFrame(val label: String, val description: String) {
@@ -151,7 +173,9 @@ fun formatDuration(ms: Long?): String {
 
 fun calculateAo(records: List<SolveRecord>, n: Int): Long? {
     if (records.size < n) return null
-    val window = records.take(n)
+    // Callers provide chronological records. The current average is always
+    // the window ending at the newest solve, not the oldest window in memory.
+    val window = records.takeLast(n)
     val sorted = window.sortedWith(compareBy<SolveRecord> { penaltyAdjustedMs(it) == null }
         .thenBy { penaltyAdjustedMs(it) ?: Long.MAX_VALUE })
     val trim = kotlin.math.ceil(n * 0.05).toInt()

@@ -27,6 +27,7 @@ class SettingsRepository(private val context: Context) {
         val gyroFollow = booleanPreferencesKey("gyro_follow")
         val smartCubeFrame = stringPreferencesKey("smart_cube_frame")
         val smartAutoInspection = booleanPreferencesKey("smart_auto_inspection")
+        val recordChaseHints = booleanPreferencesKey("record_chase_hints")
     }
 
     val settings: Flow<AppSettings> = context.cubeTraceDataStore.data.map { prefs ->
@@ -43,7 +44,8 @@ class SettingsRepository(private val context: Context) {
             smartCubeFrame = prefs[Keys.smartCubeFrame]
                 ?.let { saved -> SmartCubeFrame.entries.firstOrNull { it.name == saved } }
                 ?: SmartCubeFrame.OFFICIAL_WHITE_GREEN,
-            smartAutoInspectionEnabled = prefs[Keys.smartAutoInspection] ?: false
+            smartAutoInspectionEnabled = prefs[Keys.smartAutoInspection] ?: false,
+            recordChaseHintsEnabled = prefs[Keys.recordChaseHints] ?: true
         )
     }
 
@@ -54,5 +56,7 @@ class SettingsRepository(private val context: Context) {
     suspend fun setGyroFollow(value: Boolean) = context.cubeTraceDataStore.edit { it[Keys.gyroFollow] = value }
     suspend fun setSmartCubeFrame(value: SmartCubeFrame) = context.cubeTraceDataStore.edit { it[Keys.smartCubeFrame] = value.name }
     suspend fun setSmartAutoInspection(value: Boolean) = context.cubeTraceDataStore.edit { it[Keys.smartAutoInspection] = value }
+    suspend fun setRecordChaseHints(value: Boolean) = context.cubeTraceDataStore.edit { it[Keys.recordChaseHints] = value }
     suspend fun setPauseThreshold(value: Int) = context.cubeTraceDataStore.edit { it[Keys.pauseThreshold] = value }
+    suspend fun setCrossColor(value: String) = context.cubeTraceDataStore.edit { it[Keys.crossColor] = value }
 }
