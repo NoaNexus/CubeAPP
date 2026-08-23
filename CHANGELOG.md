@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.3 · steadier guidance and repeatable practice
+
+- Draws the latest valid results at equal horizontal intervals while retaining real date/time labels on the records timeline.
+- Accepts state-equivalent same-face smart scrambles across packets, including two inverse quarter turns for a half turn and three inverse quarter turns for a clockwise turn, without accepting a different face.
+- Reduces CTSS-1.1 state noise and outlier influence, and delays recent-form conclusions until 12 reliable smart solves.
+- Adds “重新练习这次打乱” to solve review, lets the user explicitly save or discard a pending smart result, and starts the repeated scramble as a fresh solve with a unique record id while retaining current smart-cube settings.
+
 ## 0.2.2 · resilient replay and actionable review
 
 - Reconstructs a single dropped V10 face turn only when the device counter identifies one missing step and exactly one of the 12 quarter turns reproduces the saved final checkpoint; the raw recording remains unchanged, inferred timing is excluded from CTSS/TPS/pause evidence, and confidence is reduced.

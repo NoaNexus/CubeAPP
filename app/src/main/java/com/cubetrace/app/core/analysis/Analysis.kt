@@ -25,7 +25,7 @@ import kotlin.math.min
 import kotlin.math.sqrt
 
 const val ANALYZER_VERSION = "2.1.0"
-private const val MODEL_VERSION = "CTSS-1.0.0"
+private const val MODEL_VERSION = "CTSS-1.1.0"
 private const val DAY_MS = 86_400_000L
 
 enum class PhaseCode(val label: String) {
@@ -840,9 +840,9 @@ private fun scalarFilter(observations: List<Observation>, kind: Transform): Filt
     val transformed = observations.map { transform(it.value, kind) }
     var stable = transformed.first()
     var form = 0.0
-    var aa = 0.20
+    var aa = 0.10
     var af = 0.0
-    var ff = 0.30
+    var ff = 0.14
     var previousAt = observations.first().at
     val predictions = mutableListOf<Double>()
     val scales = mutableListOf<Double>()
@@ -853,23 +853,24 @@ private fun scalarFilter(observations: List<Observation>, kind: Transform): Filt
             val decay = exp(-gapDays / 14.0)
             form *= decay
             af *= decay
-            ff = ff * decay * decay + 0.055
-            aa += 0.008
+            ff = ff * decay * decay + 0.025
+            aa += 0.004
         }
         previousAt = observation.at
         val observed = transformed[index]
         val mean = stable + form
-        val baseNoise = if (kind == Transform.LOGIT) 0.20 else 0.12
+        val baseNoise = if (kind == Transform.LOGIT) 0.24 else 0.16
         val priorVariance = (aa + ff + 2.0 * af).coerceAtLeast(0.0001)
         val residual = observed - mean
         val z = residual / sqrt(priorVariance + baseNoise * baseNoise)
-        val huberWeight = min(1.0, 1.5 / abs(z).coerceAtLeast(1.0))
+        val huberWeight = min(1.0, 1.25 / abs(z).coerceAtLeast(1.0))
+        val robustResidual = residual * huberWeight
         val effectiveNoise = baseNoise * baseNoise / (huberWeight * huberWeight * observation.reliability.coerceIn(0.1, 1.0))
         val innovation = (aa + ff + 2.0 * af + effectiveNoise).coerceAtLeast(0.0001)
         val ka = (aa + af) / innovation
         val kf = (af + ff) / innovation
-        stable += ka * residual
-        form += kf * residual
+        stable += ka * robustResidual
+        form += kf * robustResidual
         val oldAf = af
         aa = (aa - ka * (aa + af)).coerceAtLeast(0.000001)
         af = (af - ka * (oldAf + ff)).coerceIn(-0.49, 0.49)
@@ -1011,7 +1012,7 @@ object Ctss1Estimator {
             status = status,
             total = visibleTotal,
             phases = phaseForecasts,
-            recentDeltaMs = overallTimeResult?.forecast?.formDelta,
+            recentDeltaMs = overallTimeResult?.forecast?.formDelta?.takeIf { sampleCount >= 12 },
             lastUpdatedAt = samples.lastOrNull()?.first?.startedAt,
             backtestSummary = overallTimeResult?.let { "滚动回测 ${"%.0f".format(it.coverage80 * 100)}% 覆盖 · 模型与最近 12 次基线自动比较" }
                 ?: "样本不足，尚未回测"

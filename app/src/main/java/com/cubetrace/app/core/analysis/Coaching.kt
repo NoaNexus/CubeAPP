@@ -185,6 +185,15 @@ object SkillLevelPresenter {
             recommendation = "先按正常节奏完成还原，不需要刻意追求单次极限。",
             evidence = "当前 ${estimate.sampleCount} 个可靠样本 · ${estimate.status.label}"
         )
+        if (estimate.sampleCount < 12) {
+            return SkillAssessment(
+                state = SkillAssessmentState.STEADY,
+                title = "初步水平仍在收敛",
+                summary = "当前数字采用稳健中位估计；满 12 次可靠样本后再判断近期提速或回落。",
+                recommendation = "保持正常节奏继续完成智能还原，暂时不要根据一两次快慢调整训练方向。",
+                evidence = "当前 ${estimate.sampleCount} 个可靠样本 · ${estimate.status.label}"
+            )
+        }
         val delta = estimate.recentDeltaMs ?: 0.0
         val state = when {
             delta <= -150.0 -> SkillAssessmentState.IMPROVING

@@ -141,9 +141,12 @@ import com.cubetrace.app.core.analysis.buildCoachingInsights
 import com.cubetrace.app.core.analysis.nextPbThreshold
 import com.cubetrace.app.core.analysis.rollingStats
 import com.cubetrace.app.core.cube.CubeState
+import com.cubetrace.app.core.cube.CubeMove
+import com.cubetrace.app.core.cube.MoveParser
 import com.cubetrace.app.core.cube.PresetCatalog
 import com.cubetrace.app.core.cube.ScrambleGenerator
 import com.cubetrace.app.core.cube.cubeStateFromFacelets
+import com.cubetrace.app.core.cube.equivalentFaceTurnAmount
 import com.cubetrace.app.core.cube.inverse
 import com.cubetrace.app.core.cube.normalizedMoves
 import com.cubetrace.app.core.cube.moyuMoveToYellowTopBlueFront
@@ -196,6 +199,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -367,6 +371,7 @@ class CubeTraceViewModel(application: Application) : AndroidViewModel(applicatio
     private var activeSmartFrame = SmartCubeFrame.OFFICIAL_WHITE_GREEN
     private var smartExpectedStates: List<String> = emptyList()
     private var smartEventTokenEnds: List<Int> = emptyList()
+    private var smartExpectedTokenMoves: List<CubeMove> = emptyList()
     private var smartScrambleTokenCount = 0
     private var smartEventCursor = 0
     private var lastSmartSequence: Int? = null
@@ -381,6 +386,7 @@ class CubeTraceViewModel(application: Application) : AndroidViewModel(applicatio
     private var smartSolveEndSequence: Int? = null
     private var smartSolveCrossFace: Char = 'D'
     private var smartSolveStartedAtWallMs: Long = 0L
+    private var activeSolveId: String? = null
     private val _currentSolveAnalysis = MutableStateFlow<SolveAnalysis?>(null)
     val currentSolveAnalysis: StateFlow<SolveAnalysis?> = _currentSolveAnalysis.asStateFlow()
     private val _preSolveTargets = MutableStateFlow(calculatePreSolveTargets(emptyList()))
@@ -464,6 +470,63 @@ class CubeTraceViewModel(application: Application) : AndroidViewModel(applicatio
         solveReviewJob?.cancel()
         _selectedSolve.value = null
         _solveReview.value = SolveReviewComputation()
+    }
+
+    fun isCurrentPendingSolve(item: SolveRecord): Boolean =
+        _timer.value.phase == TimerPhase.STOPPED &&
+            item.id == activeSolveId &&
+            item.scramble == _timer.value.scramble
+
+    fun practiceScramble(
+        item: SolveRecord,
+        preservePendingResult: Boolean,
+        onResult: (Boolean) -> Unit
+    ) {
+        val scramble = item.scramble
+        val currentPhase = _timer.value.phase
+        if (currentPhase in setOf(TimerPhase.INSPECTION, TimerPhase.WAITING_CUBE, TimerPhase.RUNNING)) {
+            onResult(false)
+            return
+        }
+        val currentPending = isCurrentPendingSolve(item)
+        if (currentPhase == TimerPhase.STOPPED) {
+            if (!currentPending) {
+                onResult(false)
+                return
+            }
+        }
+        val pendingRecord = pendingSolveRecord().takeIf { currentPending && preservePendingResult }
+        viewModelScope.launch {
+            val saved = pendingRecord?.let { record ->
+                withContext(Dispatchers.IO) { runCatching { repository.saveSolve(record) }.isSuccess }
+            } ?: true
+            if (!saved) {
+                onResult(false)
+                return@launch
+            }
+            if (pendingRecord != null) refreshSolves()
+            beginPracticeScramble(scramble)
+            onResult(true)
+        }
+    }
+
+    private fun beginPracticeScramble(scramble: String) {
+        timerJob?.cancel()
+        closeSolve()
+        configuredSmartScramble = ""
+        smartExpectedStates = emptyList()
+        smartEventTokenEnds = emptyList()
+        smartExpectedTokenMoves = emptyList()
+        smartScrambleTokenCount = 0
+        smartEventCursor = 0
+        smartRecoveryMoves.clear()
+        smartCompletionMove = null
+        clearSmartSolveRecording()
+        _currentSolveAnalysis.value = null
+        _preSolveTargets.value = calculatePreSolveTargets(_solves.value)
+        _timer.value = TimerSnapshot(scramble = scramble)
+        _section.value = AppSection.TIMER
+        configureSmartScramble(scramble, settings.value.smartCubeFrame)
     }
     fun goToTraining(item: CubeCase? = null) {
         _selectedCase.value = null
@@ -639,12 +702,31 @@ class CubeTraceViewModel(application: Application) : AndroidViewModel(applicatio
         activeSmartFrame = frame
         val displayScramble = smartScrambleNotation(scramble, frame)
         val tokens = displayScramble.trim().split(Regex("\\s+")).filter(String::isNotBlank)
-        smartScrambleTokenCount = tokens.size
+        val tokenMoves = mutableListOf<CubeMove>()
+        tokens.forEach { token ->
+            val parsed = MoveParser.parse(token)
+            val move = parsed.moves.singleOrNull()
+            if (parsed.error != null || move == null || move.symbol.uppercase() !in setOf("U", "R", "F", "D", "L", "B")) {
+                configuredSmartScramble = ""
+                smartScrambleTokenCount = 0
+                smartExpectedTokenMoves = emptyList()
+                smartExpectedStates = emptyList()
+                smartEventTokenEnds = emptyList()
+                _timer.value = _timer.value.copy(
+                    smartPhase = SmartScramblePhase.ERROR,
+                    smartError = "打乱公式包含无法识别的动作",
+                    smartCorrection = "请重新生成打乱后再继续"
+                )
+                return
+            }
+            tokenMoves += move
+        }
+        smartScrambleTokenCount = tokenMoves.size
+        smartExpectedTokenMoves = tokenMoves
         val states = mutableListOf<String>()
         val tokenEnds = mutableListOf<Int>()
         var state = CubeState.solved()
-        tokens.forEach { token ->
-            val move = normalizedMoves(token).firstOrNull() ?: return@forEach
+        tokenMoves.forEach { move ->
             val normalizedTurns = move.turns.mod(4)
             if (normalizedTurns == 0) return@forEach
             val eventMove = move.copy(turns = if (normalizedTurns == 3) 3 else 1)
@@ -683,6 +765,7 @@ class CubeTraceViewModel(application: Application) : AndroidViewModel(applicatio
         smartSolveEndSequence = null
         smartSolveCrossFace = 'D'
         smartSolveStartedAtWallMs = 0L
+        activeSolveId = null
     }
 
     /** Returns the notation shown to the user and expected from the device. */
@@ -761,7 +844,7 @@ class CubeTraceViewModel(application: Application) : AndroidViewModel(applicatio
 
     private fun handleSmartScrambleEvent(event: DeviceMoveEvent) {
         val current = _timer.value
-        if (event.gap || event.afterFacelets == null || event.moves.isEmpty()) {
+        if (event.gap || event.beforeFacelets == null || event.afterFacelets == null || event.moves.isEmpty()) {
             _timer.value = current.copy(
                 smartPhase = SmartScramblePhase.ERROR,
                 smartError = "动作记录出现空洞，已暂停打乱进度",
@@ -769,11 +852,40 @@ class CubeTraceViewModel(application: Application) : AndroidViewModel(applicatio
             )
             return
         }
-        val after = smartFrameFacelets(event.afterFacelets)
-        val count = event.moves.size
-        val expectedAfter = smartExpectedStates.getOrNull(smartEventCursor + count - 1)
+        val parsedMoves = event.moves.mapNotNull(::smartFaceCubeMove)
+        var simulatedState = CubeState.fromFacelets(smartFrameFacelets(event.beforeFacelets))
+        if (parsedMoves.size != event.moves.size || simulatedState == null) {
+            _timer.value = current.copy(
+                smartPhase = SmartScramblePhase.ERROR,
+                smartError = "动作包包含无法识别的转动",
+                smartCorrection = "请等待魔方状态重新同步后再继续"
+            )
+            return
+        }
+        parsedMoves.forEach { move ->
+            simulatedState = simulatedState?.apply(move)
+            handleSmartScrambleStep(move, simulatedState?.asFacelets() ?: return@forEach)
+        }
+        val authoritativeAfter = smartFrameFacelets(event.afterFacelets)
+        if (simulatedState?.asFacelets() != authoritativeAfter) {
+            _timer.value = _timer.value.copy(
+                smartPhase = SmartScramblePhase.ERROR,
+                smartError = "动作与设备局面不一致",
+                smartCorrection = "请等待魔方重新同步后，再从当前局面继续"
+            )
+            return
+        }
+        if (_timer.value.smartPhase == SmartScramblePhase.READY_TO_INSPECT) {
+            _preSolveTargets.value = calculatePreSolveTargets(_solves.value)
+            if (settings.value.smartAutoInspectionEnabled) startSmartInspection()
+        }
+    }
+
+    private fun handleSmartScrambleStep(move: CubeMove, after: String) {
+        val current = _timer.value
+        val expectedAfter = smartExpectedStates.getOrNull(smartEventCursor)
         if (expectedAfter == after) {
-            smartEventCursor += count
+            smartEventCursor += 1
             smartRecoveryMoves.clear()
             val complete = smartEventCursor >= smartExpectedStates.size
             val completedTokens = smartEventTokenEnds.count { it < smartEventCursor }
@@ -783,12 +895,6 @@ class CubeTraceViewModel(application: Application) : AndroidViewModel(applicatio
                 smartError = null,
                 smartCorrection = null
             )
-            if (complete) {
-                // Freeze the target at ScrambleMatched. It remains unchanged
-                // through the optional button, inspection and waiting states.
-                _preSolveTargets.value = calculatePreSolveTargets(_solves.value)
-            }
-            if (complete && settings.value.smartAutoInspectionEnabled) startSmartInspection()
             return
         }
 
@@ -800,23 +906,87 @@ class CubeTraceViewModel(application: Application) : AndroidViewModel(applicatio
             // expected checkpoint, so repeated mistakes are recoverable.
             smartRecoveryMoves.clear()
             val completedTokens = smartEventTokenEnds.count { it < smartEventCursor }
+            val complete = smartEventCursor >= smartExpectedStates.size
             _timer.value = current.copy(
                 smartScrambleProgress = completedTokens,
-                smartPhase = if (smartEventCursor == 0) SmartScramblePhase.READY_TO_SCRAMBLE else SmartScramblePhase.SCRAMBLING,
+                smartPhase = when {
+                    complete -> SmartScramblePhase.READY_TO_INSPECT
+                    smartEventCursor == 0 -> SmartScramblePhase.READY_TO_SCRAMBLE
+                    else -> SmartScramblePhase.SCRAMBLING
+                },
                 smartError = null,
                 smartCorrection = null
             )
             return
         }
 
-        event.moves.forEach { rawMove ->
-            val move = smartFaceMove(rawMove) ?: return@forEach
-            val inverse = inverseSmartMove(move)
-            if (smartRecoveryMoves.lastOrNull() == inverse) {
-                smartRecoveryMoves.removeAt(smartRecoveryMoves.lastIndex)
-            } else {
-                smartRecoveryMoves += move
+
+        val completedTokens = smartEventTokenEnds.count { it < smartEventCursor }
+        val tokenStartCursor = if (completedTokens == 0) {
+            0
+        } else {
+            (smartEventTokenEnds.getOrNull(completedTokens - 1) ?: -1) + 1
+        }
+        val tokenEnd = smartEventTokenEnds.getOrNull(completedTokens)
+        val tokenCheckpoint = smartExpectedStates.getOrNull(tokenStartCursor - 1)
+            ?: CubeState.solved().asFacelets()
+        val expectedTokenMove = smartExpectedTokenMoves.getOrNull(completedTokens)
+        val packetStaysOnExpectedFace = expectedTokenMove != null &&
+            move.symbol.uppercase() == expectedTokenMove.symbol.uppercase() &&
+            move.wide == expectedTokenMove.wide
+        val packetOnlyUndoesRecovery = current.smartPhase == SmartScramblePhase.ERROR &&
+            smartRecoveryMoves.lastOrNull() == move.inverse().normalized
+        val equivalentTurns = expectedTokenMove?.takeIf {
+            packetStaysOnExpectedFace || packetOnlyUndoesRecovery
+        }?.let { expected ->
+            equivalentFaceTurnAmount(tokenCheckpoint, after, expected)
+        }
+        if (equivalentTurns != null && tokenEnd != null) {
+            val expectedTurns = expectedTokenMove.turns.mod(4)
+            when (equivalentTurns) {
+                expectedTurns -> {
+                    smartEventCursor = tokenEnd + 1
+                    smartRecoveryMoves.clear()
+                    val progress = completedTokens + 1
+                    val complete = progress >= smartScrambleTokenCount
+                    _timer.value = current.copy(
+                        smartScrambleProgress = progress,
+                        smartPhase = if (complete) SmartScramblePhase.READY_TO_INSPECT else SmartScramblePhase.SCRAMBLING,
+                        smartError = null,
+                        smartCorrection = null
+                    )
+                }
+                0 -> {
+                    smartEventCursor = tokenStartCursor
+                    smartRecoveryMoves.clear()
+                    _timer.value = current.copy(
+                        smartScrambleProgress = completedTokens,
+                        smartPhase = if (completedTokens == 0) SmartScramblePhase.READY_TO_SCRAMBLE else SmartScramblePhase.SCRAMBLING,
+                        smartError = null,
+                        smartCorrection = null
+                    )
+                }
+                else -> {
+                    smartEventCursor = tokenStartCursor
+                    setSmartRecoveryForNetTurn(expectedTokenMove, equivalentTurns)
+                    val undo = smartRecoveryMoves.lastOrNull()?.let(::inverseSmartMove)
+                    _timer.value = current.copy(
+                        smartScrambleProgress = completedTokens,
+                        smartPhase = SmartScramblePhase.ERROR,
+                        smartError = "同面等效转动尚未完成",
+                        smartCorrection = undo?.let { "可继续转动同一面完成等效动作，或执行 $it 返回" }
+                            ?: "请继续转动同一面，直到与高亮动作等效"
+                    )
+                }
             }
+            return
+        }
+
+        val inverse = move.inverse().normalized
+        if (smartRecoveryMoves.lastOrNull() == inverse) {
+            smartRecoveryMoves.removeAt(smartRecoveryMoves.lastIndex)
+        } else {
+            smartRecoveryMoves += move.normalized
         }
         val undo = smartRecoveryMoves.lastOrNull()?.let(::inverseSmartMove)
         _timer.value = current.copy(
@@ -830,6 +1000,7 @@ class CubeTraceViewModel(application: Application) : AndroidViewModel(applicatio
     fun startSmartInspection() {
         val current = _timer.value
         if (smartScrambleTokenCount == 0 || current.smartScrambleProgress < smartScrambleTokenCount) return
+        if (smartEventCursor != smartExpectedStates.size) return
         if (current.smartPhase != SmartScramblePhase.READY_TO_INSPECT) return
         if (current.phase !in setOf(TimerPhase.IDLE, TimerPhase.READY)) return
         timerJob?.cancel()
@@ -933,21 +1104,39 @@ class CubeTraceViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    private fun smartFaceMove(move: String?): String? {
-        val displayed = move?.let {
+    private fun smartFaceCubeMove(move: String?): CubeMove? {
+        val source = move ?: return null
+        val sourceResult = MoveParser.parse(source)
+        val sourceMove = sourceResult.moves.singleOrNull()
+        if (sourceResult.error != null || sourceMove == null) return null
+        val displayed = sourceMove.normalized.let {
             if (activeSmartFrame == SmartCubeFrame.OFFICIAL_WHITE_GREEN) {
                 yellowTopBlueFrontToOfficialMove(it)
             } else {
                 it
             }
-        } ?: return null
-        val parsed = normalizedMoves(displayed).firstOrNull() ?: return null
+        }
+        val displayedResult = MoveParser.parse(displayed)
+        val parsed = displayedResult.moves.singleOrNull()
+        if (displayedResult.error != null || parsed == null) return null
         if (parsed.symbol.uppercase() !in setOf("U", "R", "F", "D", "L", "B")) return null
-        return parsed.normalized
+        return parsed
     }
+
+    private fun smartFaceMove(move: String?): String? = smartFaceCubeMove(move)?.normalized
 
     private fun inverseSmartMove(move: String): String? =
         normalizedMoves(move).firstOrNull()?.inverse()?.normalized
+
+    private fun setSmartRecoveryForNetTurn(expectedMove: CubeMove, turns: Int) {
+        smartRecoveryMoves.clear()
+        val clockwise = expectedMove.copy(turns = 1).normalized
+        when (turns.mod(4)) {
+            1 -> smartRecoveryMoves += clockwise
+            2 -> repeat(2) { smartRecoveryMoves += clockwise }
+            3 -> smartRecoveryMoves += expectedMove.copy(turns = 3).normalized
+        }
+    }
 
     private fun recordDeviceMoveEvent(event: DeviceMoveEvent) {
         val receiveElapsed = (event.receivedAtElapsedMs - timerStartElapsed).coerceAtLeast(0L)
@@ -1013,6 +1202,7 @@ class CubeTraceViewModel(application: Application) : AndroidViewModel(applicatio
     ) {
         timerJob?.cancel()
         clearSmartSolveRecording()
+        activeSolveId = "pending-${UUID.randomUUID()}"
         // Clear the previous solve before taking the new wall-clock anchor.
         // clearSmartSolveRecording() intentionally resets this field so an old
         // solve can never inherit its start time.
@@ -1097,7 +1287,7 @@ class CubeTraceViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     private fun pendingSolveRecord(durationMs: Long = _timer.value.elapsedMs): SolveRecord = SolveRecord(
-        id = "pending-${_timer.value.scramble.hashCode()}",
+        id = activeSolveId ?: "pending-${UUID.randomUUID()}",
         sessionId = "main",
         sessionName = "主 session",
         scramble = _timer.value.scramble,
@@ -1325,13 +1515,27 @@ private fun CubeTraceApp(viewModel: CubeTraceViewModel) {
                             onDeleteVariant = { viewModel.deleteVariant(selectedCase!!, it) }
                         )
                     }
-                    if (selectedSolve != null) {
+                    selectedSolve?.let { solveToReview ->
                         SolveReviewDialog(
-                            solve = selectedSolve!!,
+                            solve = solveToReview,
                             pauseThreshold = settings.pauseThresholdMs,
-                            review = solveReview.takeIf { it.solveId == selectedSolve!!.id }
-                                ?: SolveReviewComputation(solveId = selectedSolve!!.id, loading = true),
-                            onDismiss = viewModel::closeSolve
+                            review = solveReview.takeIf { it.solveId == solveToReview.id }
+                                ?: SolveReviewComputation(solveId = solveToReview.id, loading = true),
+                            currentPendingSolve = viewModel.isCurrentPendingSolve(solveToReview),
+                            onDismiss = viewModel::closeSolve,
+                            onPracticeScramble = { preservePendingResult, onFinished ->
+                                viewModel.practiceScramble(
+                                    item = solveToReview,
+                                    preservePendingResult = preservePendingResult
+                                ) { success ->
+                                    snackbar = if (success) {
+                                        "已载入原打乱，请按当前设置重新练习"
+                                    } else {
+                                        "请先处理计时页正在进行的还原，或稍后重试"
+                                    }
+                                    onFinished(success)
+                                }
+                            }
                         )
                     }
                     if (skillOpen) {
@@ -2686,8 +2890,13 @@ private fun RecordsScreen(
                 StatBlock("平均", formatDuration(stats.averageMs), "原始口径")
             }
             Spacer(Modifier.height(18.dp))
-            SectionRule("趋势 / 最近 12 次")
-            TrendChart(solves.take(12).reversed())
+            SectionRule("趋势 / 最近 12 次有效成绩")
+            val recentValidSolves = solves.asSequence()
+                .filter { penaltyAdjustedMs(it) != null }
+                .take(12)
+                .toList()
+                .reversed()
+            TrendChart(recentValidSolves)
             Spacer(Modifier.height(12.dp))
             Row(
                 modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -2922,7 +3131,7 @@ private fun TrendChart(solves: List<SolveRecord>) {
     val latest = points.last().second
     val timeFormatter = remember { SimpleDateFormat("MM/dd\nHH:mm", Locale.getDefault()) }
     val tickPoints = remember(points) {
-        listOf(points.first(), points[points.lastIndex / 2], points.last()).distinctBy { it.first }
+        listOf(0, points.lastIndex / 2, points.lastIndex).distinct().map { points[it] }
     }
     Card(
         colors = CardDefaults.cardColors(containerColor = CubeTraceColors.paper),
@@ -2933,8 +3142,8 @@ private fun TrendChart(solves: List<SolveRecord>) {
         Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 11.dp)) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Column {
-                    SectionEyebrow("真实记录时间轴")
-                    Text("点间距按实际时间", fontSize = 12.sp, color = CubeTraceColors.muted, modifier = Modifier.padding(top = 2.dp))
+                    SectionEyebrow("最近记录时间轴")
+                    Text("每个点代表一次还原 · 横向等间距", fontSize = 12.sp, color = CubeTraceColors.muted, modifier = Modifier.padding(top = 2.dp))
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                     MetricText("最快", formatDuration(minimum))
@@ -2966,15 +3175,12 @@ private fun TrendChart(solves: List<SolveRecord>) {
                         val y = verticalPadding + drawableHeight * row / 2f
                         drawLine(CubeTraceColors.line, Offset(horizontalPadding, y), Offset(size.width - horizontalPadding, y), 1.dp.toPx())
                     }
-                    val firstTime = points.first().first
-                    val lastTime = points.last().first
-                    val timeRange = (lastTime - firstTime).coerceAtLeast(1L)
                     val path = Path()
-                    points.forEachIndexed { index, (timestamp, value) ->
+                    points.forEachIndexed { index, (_, value) ->
                         val x = if (points.size == 1) {
                             size.width / 2f
                         } else {
-                            horizontalPadding + (timestamp - firstTime).toFloat() / timeRange.toFloat() * drawableWidth
+                            horizontalPadding + index.toFloat() / points.lastIndex.toFloat() * drawableWidth
                         }
                         // In speedcubing a lower time is better, so faster
                         // solves intentionally sit higher on this chart.
@@ -2983,9 +3189,9 @@ private fun TrendChart(solves: List<SolveRecord>) {
                         if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
                     }
                     drawPath(path, color = CubeTraceColors.track, style = Stroke(width = 2.5.dp.toPx()))
-                    points.forEachIndexed { index, (timestamp, value) ->
+                    points.forEachIndexed { index, (_, value) ->
                         val x = if (points.size == 1) size.width / 2f else {
-                            horizontalPadding + (timestamp - firstTime).toFloat() / timeRange.toFloat() * drawableWidth
+                            horizontalPadding + index.toFloat() / points.lastIndex.toFloat() * drawableWidth
                         }
                         val y = verticalPadding + (value - minimum).toFloat() /
                             (maximum - minimum).toFloat() * drawableHeight
@@ -3355,9 +3561,20 @@ private fun SolveReviewDialog(
     solve: SolveRecord,
     pauseThreshold: Int,
     review: SolveReviewComputation,
-    onDismiss: () -> Unit
+    currentPendingSolve: Boolean,
+    onDismiss: () -> Unit,
+    onPracticeScramble: (preservePendingResult: Boolean, onFinished: (Boolean) -> Unit) -> Unit
 ) {
     val analysis = review.analysis
+    var confirmPractice by remember(solve.id) { mutableStateOf(false) }
+    var practiceLaunching by remember(solve.id) { mutableStateOf(false) }
+    val launchPractice: (Boolean) -> Unit = { preservePendingResult ->
+        practiceLaunching = true
+        onPracticeScramble(preservePendingResult) { success ->
+            practiceLaunching = false
+            if (success) confirmPractice = false
+        }
+    }
     DialogSurface(onDismiss) {
         Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -3366,6 +3583,15 @@ private fun SolveReviewDialog(
             }
             Text(formatDuration(penaltyAdjustedMs(solve)), fontFamily = FontFamily.Monospace, fontSize = 42.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 14.dp))
             Text(solve.scramble, fontFamily = FontFamily.Monospace, fontSize = 12.sp, color = CubeTraceColors.muted, modifier = Modifier.padding(top = 4.dp))
+            OutlinedButton(
+                onClick = {
+                    if (currentPendingSolve) confirmPractice = true else launchPractice(false)
+                },
+                enabled = !practiceLaunching,
+                modifier = Modifier.fillMaxWidth().padding(top = 12.dp)
+            ) {
+                Text(if (practiceLaunching) "正在载入…" else "重新练习这次打乱")
+            }
             if (review.loading) {
                 Text(
                     "正在后台重放动作并生成分析，页面已经可以浏览。",
@@ -3471,6 +3697,33 @@ private fun SolveReviewDialog(
             Spacer(Modifier.height(18.dp))
             Text("当前记录为 ${if (solve.completeness == Completeness.COMPLETE) "完整" else "不完整"}。停顿率按设置中的 ${pauseThreshold} ms 阈值计算，分析结果可从动作记录重新生成。", fontSize = 13.sp, color = CubeTraceColors.muted)
         }
+    }
+    if (confirmPractice) {
+        AlertDialog(
+            onDismissRequest = { if (!practiceLaunching) confirmPractice = false },
+            title = { Text("重新练习这次打乱？") },
+            text = {
+                Text("这次成绩还没有确认保存。重新练习会沿用当前智能魔方朝向和观察设置，请选择是否保留本次成绩。")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { launchPractice(true) },
+                    enabled = !practiceLaunching
+                ) { Text("保存并重练") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(
+                        onClick = { launchPractice(false) },
+                        enabled = !practiceLaunching
+                    ) { Text("放弃并重练", color = CubeTraceColors.fault) }
+                    TextButton(
+                        onClick = { confirmPractice = false },
+                        enabled = !practiceLaunching
+                    ) { Text("取消") }
+                }
+            }
+        )
     }
 }
 

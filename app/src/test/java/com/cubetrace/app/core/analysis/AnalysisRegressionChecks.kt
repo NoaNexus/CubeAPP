@@ -2,6 +2,7 @@
 package com.cubetrace.app.core.analysis
 
 import com.cubetrace.app.core.cube.CubeState
+import com.cubetrace.app.core.cube.equivalentFaceTurnAmount
 import com.cubetrace.app.core.cube.PresetCatalog
 import com.cubetrace.app.core.cube.f2lSolvedSlotsOn
 import com.cubetrace.app.core.cube.isCubeSolvedRelativeToCenters
@@ -56,10 +57,13 @@ object AnalysisRegressionChecks {
         techniqueMatchesVerifiedPllCase()
         catalogLastLayerRecognitionNeverMislabels()
         ordinaryFaceTurnsAreNotWideMoves()
+        equivalentSmartScrambleTurnsAreRecognized()
         recoveredPhaseDoesNotClaimFormulaOrFingerEvidence()
         skillPresenterExplainsCurrentState()
+        skillEstimateResistsOneExtremeSolve()
+        skillEstimateStillTracksSustainedImprovement()
         pbThresholdBoundaryIsExact()
-        println("AnalysisRegressionChecks: 36 passed")
+        println("AnalysisRegressionChecks: 39 passed")
     }
 
     private fun oneMoveSolve(
@@ -589,6 +593,33 @@ object AnalysisRegressionChecks {
         check(usesWideSliceOrRotation(listOf("y'")))
     }
 
+    private fun equivalentSmartScrambleTurnsAreRecognized() {
+        val solved = CubeState.solved()
+        val u2 = normalizedMoves("U2").single()
+        val r = normalizedMoves("R").single()
+        check(
+            equivalentFaceTurnAmount(
+                solved.asFacelets(),
+                solved.apply(normalizedMoves("U' U'")).asFacelets(),
+                u2
+            ) == 2
+        )
+        check(
+            equivalentFaceTurnAmount(
+                solved.asFacelets(),
+                solved.apply(normalizedMoves("R' R' R'")).asFacelets(),
+                r
+            ) == 1
+        )
+        check(
+            equivalentFaceTurnAmount(
+                solved.asFacelets(),
+                solved.apply(normalizedMoves("F'")).asFacelets(),
+                r
+            ) == null
+        )
+    }
+
     private fun recoveredPhaseDoesNotClaimFormulaOrFingerEvidence() {
         val cubeCase = PresetCatalog.all().first { it.stage == Stage.PLL }
         val phase = PhaseMetric(
@@ -647,6 +678,45 @@ object AnalysisRegressionChecks {
         check(assessment.focusPhase == PhaseCode.F3)
         check(assessment.recommendation.contains("F3"))
         check(assessment.evidence.contains("20 个样本"))
+    }
+
+    private fun skillEstimateResistsOneExtremeSolve() {
+        val minute = 60_000L
+        val normal = (0 until 12).map { index ->
+            oneMoveSolve(
+                elapsedMs = 20_000L,
+                move = RecordedMove(0, "R'", 20_000L, sequence = 1)
+            ).copy(id = "stable-$index", startedAt = (index + 1L) * minute)
+        }
+        val baseline = Ctss1Estimator.estimate(normal, 250)
+        val extreme = oneMoveSolve(
+            elapsedMs = 100_000L,
+            move = RecordedMove(0, "R'", 100_000L, sequence = 1)
+        ).copy(id = "extreme", startedAt = 13L * minute)
+        val updated = Ctss1Estimator.estimate(normal + extreme, 250)
+        val before = baseline.total?.timeMs?.median ?: error("baseline estimate missing")
+        val after = updated.total?.timeMs?.median ?: error("updated estimate missing")
+        check(kotlin.math.abs(after - before) < 1_000.0) {
+            "one extreme solve moved the estimate too far: before=$before after=$after"
+        }
+        check(Ctss1Estimator.estimate(normal.take(8), 250).recentDeltaMs == null)
+    }
+
+    private fun skillEstimateStillTracksSustainedImprovement() {
+        val minute = 60_000L
+        val improving = (0 until 20).map { index ->
+            val elapsed = 26_000L - index * 600L
+            oneMoveSolve(
+                elapsedMs = elapsed,
+                move = RecordedMove(0, "R'", elapsed, sequence = 1)
+            ).copy(id = "improving-$index", startedAt = (index + 1L) * minute)
+        }
+        val estimate = Ctss1Estimator.estimate(improving, 250)
+        val current = estimate.total?.timeMs?.median ?: error("improvement estimate missing")
+        check(current < 22_000.0) { "sustained improvement was over-smoothed: $current" }
+        check((estimate.recentDeltaMs ?: 0.0) < 0.0) {
+            "sustained improvement should report a negative recent delta: ${estimate.recentDeltaMs}"
+        }
     }
 
     private fun pbThresholdBoundaryIsExact() {

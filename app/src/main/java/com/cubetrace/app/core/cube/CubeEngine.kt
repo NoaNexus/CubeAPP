@@ -282,6 +282,28 @@ object ScrambleGenerator {
 fun normalizedMoves(notation: String): List<CubeMove> = MoveParser.parseOrEmpty(notation)
 
 /**
+ * Returns the net quarter-turn amount (0..3) when [currentFacelets] differs
+ * from [checkpointFacelets] only by rotations of the face used by
+ * [expectedMove]. This lets smart scramble guidance accept physically
+ * equivalent input paths such as U' U' for U2 or R' R' R' for R without
+ * accepting a turn on another face.
+ */
+fun equivalentFaceTurnAmount(
+    checkpointFacelets: String,
+    currentFacelets: String,
+    expectedMove: CubeMove
+): Int? {
+    if (expectedMove.wide || expectedMove.symbol.uppercase() !in setOf("U", "R", "F", "D", "L", "B")) {
+        return null
+    }
+    val checkpoint = CubeState.fromFacelets(checkpointFacelets) ?: return null
+    if (CubeState.fromFacelets(currentFacelets) == null) return null
+    return (0..3).firstOrNull { turns ->
+        checkpoint.apply(expectedMove.copy(turns = turns)).asFacelets() == currentFacelets
+    }
+}
+
+/**
  * Converts the Moyu V10 protocol's factory frame (white U / green F) to the
  * app's fixed yellow U / blue F frame. The protocol uses the standard
  * URFDLB labels and face grids; the two frames differ by a 180-degree whole
