@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.4 · stable level, richer review and custom practice
+
+- Shows recognition-matched OLL / PLL recommendations directly in deep review with the formula, current-state diagram and smooth embedded 3D playback.
+- Separates CTSS-1.2 long-term reproducible level from short-term form, replaces ambiguous phase bars with interval rulers and evidence milestones, and adds clearly labelled offline WCA average-rank comparison bands.
+- Displays current and best ao5 / ao12 together, keeping the latest 12-result timeline equally spaced.
+- Adds validated custom scrambles to Timer while preserving the connected smart-cube scramble, inspection and automatic timing workflow.
+- Keeps ranking comparison and all personal analysis fully offline; no solve or identity is sent to WCA.
+
 ## 0.2.3 · steadier guidance and repeatable practice
 
 - Draws the latest valid results at equal horizontal intervals while retaining real date/time labels on the records timeline.

@@ -25,7 +25,7 @@ import kotlin.math.min
 import kotlin.math.sqrt
 
 const val ANALYZER_VERSION = "2.1.0"
-private const val MODEL_VERSION = "CTSS-1.1.0"
+private const val MODEL_VERSION = "CTSS-1.2.0"
 private const val DAY_MS = 86_400_000L
 
 enum class PhaseCode(val label: String) {
@@ -776,6 +776,29 @@ data class IntervalForecast(
     val formDelta: Double
 )
 
+data class ReproducibleInterval(
+    val median: Double,
+    val p50Low: Double,
+    val p50High: Double
+)
+
+/**
+ * A reproducible level deliberately excludes the short-term form component.
+ * The uncertainty width is retained from the calibrated forecast, but centred
+ * on the long-term state so one unusually fast or slow latest solve cannot
+ * dominate the large number shown in Records.
+ */
+fun IntervalForecast.reproducibleInterval(): ReproducibleInterval {
+    val safeMedian = median.coerceAtLeast(0.001)
+    val lowerRatio = (p50Low / safeMedian).coerceIn(0.05, 1.0)
+    val upperRatio = (p50High / safeMedian).coerceAtLeast(1.0)
+    return ReproducibleInterval(
+        median = stable,
+        p50Low = stable * lowerRatio,
+        p50High = stable * upperRatio
+    )
+}
+
 data class SkillForecast(
     val timeMs: IntervalForecast,
     val moves: IntervalForecast,
@@ -801,7 +824,9 @@ data class SkillEstimate(
     val recentDeltaMs: Double? = null,
     val lastUpdatedAt: Long? = null,
     val backtestSummary: String = "样本不足，尚未回测"
-)
+) {
+    val reproducibleTime: ReproducibleInterval? get() = total?.timeMs?.reproducibleInterval()
+}
 
 private enum class Transform { LOG, LOGIT }
 

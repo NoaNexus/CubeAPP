@@ -72,6 +72,13 @@ data class CubeMove(
 data class MoveParseError(val position: Int, val message: String)
 data class MoveParseResult(val moves: List<CubeMove>, val error: MoveParseError? = null)
 
+data class ScrambleValidationResult(
+    val notation: String? = null,
+    val error: String? = null
+) {
+    val valid: Boolean get() = notation != null && error == null
+}
+
 object MoveParser {
     fun parse(input: String): MoveParseResult {
         return try {
@@ -171,6 +178,30 @@ object MoveParser {
     }
 
     private class ParserError(message: String, val position: Int) : IllegalArgumentException(message)
+}
+
+/**
+ * Validates a timer scramble without silently accepting formula-only moves.
+ * Parenthesized input is allowed and flattened, but a 3x3 timer scramble is
+ * deliberately limited to outer U/R/F/D/L/B turns.
+ */
+fun validateTimerScramble(input: String, maxMoves: Int = 100): ScrambleValidationResult {
+    val parsed = MoveParser.parse(input.trim())
+    parsed.error?.let { error ->
+        return ScrambleValidationResult(error = "第 ${error.position + 1} 个字符附近：${error.message}")
+    }
+    if (parsed.moves.isEmpty()) {
+        return ScrambleValidationResult(error = "请输入至少一个打乱动作")
+    }
+    if (parsed.moves.size > maxMoves) {
+        return ScrambleValidationResult(error = "打乱最多支持 $maxMoves 个动作")
+    }
+    if (parsed.moves.any { it.wide || it.symbol !in setOf("U", "R", "F", "D", "L", "B") }) {
+        return ScrambleValidationResult(error = "自定义打乱只支持 U、R、F、D、L、B 外层转动")
+    }
+    return ScrambleValidationResult(
+        notation = parsed.moves.joinToString(" ") { it.normalized }
+    )
 }
 
 class CubeState private constructor(private val facelets: CharArray) {

@@ -130,6 +130,10 @@ import com.cubetrace.app.core.analysis.CoachingTechniqueKind
 import com.cubetrace.app.core.analysis.ExactAverage
 import com.cubetrace.app.core.analysis.PbThreshold
 import com.cubetrace.app.core.analysis.PreSolveTargets
+import com.cubetrace.app.core.analysis.OfflineRankRange
+import com.cubetrace.app.core.analysis.OfflineRankEstimate
+import com.cubetrace.app.core.analysis.OfflineWcaRankEstimator
+import com.cubetrace.app.core.analysis.reproducibleInterval
 import com.cubetrace.app.core.analysis.RollingStats
 import com.cubetrace.app.core.analysis.SkillEstimate
 import com.cubetrace.app.core.analysis.SkillAssessment
@@ -152,6 +156,7 @@ import com.cubetrace.app.core.cube.normalizedMoves
 import com.cubetrace.app.core.cube.moyuMoveToYellowTopBlueFront
 import com.cubetrace.app.core.cube.yellowTopBlueFrontToOfficialFacelets
 import com.cubetrace.app.core.cube.yellowTopBlueFrontToOfficialMove
+import com.cubetrace.app.core.cube.validateTimerScramble
 import com.cubetrace.app.core.cube.verifyF2lStage
 import com.cubetrace.app.core.cube.verifyOllStage
 import com.cubetrace.app.core.cube.verifyPllStage
@@ -670,6 +675,34 @@ class CubeTraceViewModel(application: Application) : AndroidViewModel(applicatio
         _currentSolveAnalysis.value = null
         _preSolveTargets.value = calculatePreSolveTargets(_solves.value)
         _timer.value = TimerSnapshot(scramble = ScrambleGenerator.generate())
+    }
+
+    fun applyCustomScramble(
+        rawNotation: String,
+        frame: SmartCubeFrame = settings.value.smartCubeFrame
+    ): FormulaVerificationResult {
+        if (_timer.value.phase !in setOf(TimerPhase.IDLE, TimerPhase.READY)) {
+            return FormulaVerificationResult(false, "请先结束或保存当前还原，再更换打乱")
+        }
+        val validation = validateTimerScramble(rawNotation)
+        val displayNotation = validation.notation
+            ?: return FormulaVerificationResult(false, validation.error ?: "打乱无法识别")
+        val internalNotation = if (frame == SmartCubeFrame.OFFICIAL_WHITE_GREEN) {
+            displayNotation
+        } else {
+            displayNotation.split(Regex("\\s+")).joinToString(" ") { token ->
+                moyuMoveToYellowTopBlueFront(token)
+            }
+        }
+        timerJob?.cancel()
+        smartRecoveryMoves.clear()
+        smartCompletionMove = null
+        clearSmartSolveRecording()
+        _currentSolveAnalysis.value = null
+        _preSolveTargets.value = calculatePreSolveTargets(_solves.value)
+        configuredSmartScramble = ""
+        _timer.value = TimerSnapshot(scramble = internalNotation)
+        return FormulaVerificationResult(true, "已载入 ${displayNotation.split(' ').size} 步自定义打乱")
     }
 
     /**
@@ -1519,6 +1552,8 @@ private fun CubeTraceApp(viewModel: CubeTraceViewModel) {
                         SolveReviewDialog(
                             solve = solveToReview,
                             pauseThreshold = settings.pauseThresholdMs,
+                            assistLabels = settings.assistLabels,
+                            reducedMotion = settings.reducedMotion,
                             review = solveReview.takeIf { it.solveId == solveToReview.id }
                                 ?: SolveReviewComputation(solveId = solveToReview.id, loading = true),
                             currentPendingSolve = viewModel.isCurrentPendingSolve(solveToReview),
@@ -2127,6 +2162,7 @@ private fun TimerRoute(
         onToggle = viewModel::toggleTimer,
         onStartSmartInspection = viewModel::startSmartInspection,
         onRegenerate = viewModel::regenerateScramble,
+        onCustomScramble = { notation -> viewModel.applyCustomScramble(notation, smartCubeFrame) },
         onPenalty = viewModel::setTimerPenalty,
         onSave = viewModel::saveTimer,
         onAbandon = viewModel::abandonTimer,
@@ -2153,6 +2189,7 @@ private fun TimerScreen(
     onToggle: () -> Unit,
     onStartSmartInspection: () -> Unit,
     onRegenerate: () -> Unit,
+    onCustomScramble: (String) -> FormulaVerificationResult,
     onPenalty: (Penalty) -> Unit,
     onSave: () -> Unit,
     onAbandon: () -> Unit,
@@ -2170,6 +2207,9 @@ private fun TimerScreen(
     val scrambleTokens = remember(scrambleNotation) {
         scrambleNotation.trim().split(Regex("\\s+")).filter(String::isNotBlank)
     }
+    var customScrambleOpen by remember { mutableStateOf(false) }
+    var customScrambleText by remember(scrambleNotation) { mutableStateOf(scrambleNotation) }
+    var customScrambleError by remember { mutableStateOf("") }
     val smartCubeAvailable = deviceStatus is DeviceStatus.Ready && deviceLiveState.synced
     val smartDeviceConnected = deviceStatus is DeviceStatus.Ready
     val smartTimerActive = smartCubeAvailable && timer.smartAuto &&
@@ -2246,6 +2286,11 @@ private fun TimerScreen(
                         progress = timer.smartScrambleProgress,
                         phase = timer.smartPhase,
                         onRegenerate = onRegenerate,
+                        onCustom = {
+                            customScrambleText = scrambleNotation
+                            customScrambleError = ""
+                            customScrambleOpen = true
+                        },
                         regenerateEnabled = !smartTimerActive
                     )
                     if (preSolveTargetVisible && !smartInspectionFocus) {
@@ -2399,6 +2444,56 @@ private fun TimerScreen(
             }
             Text(statusText, fontSize = 12.sp, color = CubeTraceColors.muted, modifier = Modifier.padding(bottom = 16.dp))
         }
+    }
+    if (customScrambleOpen) {
+        AlertDialog(
+            onDismissRequest = { customScrambleOpen = false },
+            title = { Text("自定义打乱练习") },
+            text = {
+                Column {
+                    Text(
+                        "按当前“${smartCubeFrame.label}”朝向输入；保存后会复用智能打乱校验、观察和自动计时流程。",
+                        fontSize = 13.sp,
+                        color = CubeTraceColors.muted
+                    )
+                    OutlinedTextField(
+                        value = customScrambleText,
+                        onValueChange = {
+                            customScrambleText = it
+                            customScrambleError = ""
+                        },
+                        label = { Text("打乱公式") },
+                        placeholder = { Text("例如 R U R' U' F2") },
+                        isError = customScrambleError.isNotBlank(),
+                        minLines = 3,
+                        modifier = Modifier.fillMaxWidth().padding(top = 12.dp)
+                    )
+                    if (customScrambleError.isNotBlank()) {
+                        Text(
+                            customScrambleError,
+                            fontSize = 12.sp,
+                            color = CubeTraceColors.fault,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                    }
+                    Text(
+                        "支持 U / R / F / D / L / B 及 2、' 后缀；不会接受宽层、夹层或整体转体。",
+                        fontSize = 11.sp,
+                        color = CubeTraceColors.muted,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val result = onCustomScramble(customScrambleText)
+                    if (result.success) customScrambleOpen = false else customScrambleError = result.message
+                }) { Text("使用此打乱") }
+            },
+            dismissButton = {
+                TextButton(onClick = { customScrambleOpen = false }) { Text("取消") }
+            }
+        )
     }
 }
 
@@ -2655,6 +2750,7 @@ private fun ScrambleSequenceCard(
     progress: Int,
     phase: SmartScramblePhase,
     onRegenerate: () -> Unit,
+    onCustom: () -> Unit,
     regenerateEnabled: Boolean
 ) {
     val completedCount = if (smartMode) progress.coerceIn(0, tokens.size) else 0
@@ -2683,8 +2779,11 @@ private fun ScrambleSequenceCard(
                         modifier = Modifier.padding(top = 3.dp)
                     )
                 }
-                TextButton(onClick = onRegenerate, enabled = regenerateEnabled) {
-                    Text("重新生成", fontSize = 12.sp)
+                Row {
+                    TextButton(onClick = onCustom, enabled = regenerateEnabled) { Text("自定义", fontSize = 12.sp) }
+                    TextButton(onClick = onRegenerate, enabled = regenerateEnabled) {
+                        Text("重新生成", fontSize = 12.sp)
+                    }
                 }
             }
 
@@ -2905,6 +3004,7 @@ private fun RecordsScreen(
                 MetricText("当前 ao5", formatAverage(rolling.currentAo5))
                 MetricText("最佳 ao5", formatAverage(rolling.bestAo5))
                 MetricText("当前 ao12", formatAverage(rolling.currentAo12))
+                MetricText("最佳 ao12", formatAverage(rolling.bestAo12))
                 MetricText("停顿阈值", "$pauseThreshold ms")
             }
             Spacer(Modifier.height(20.dp))
@@ -2928,6 +3028,13 @@ private fun formatAverage(value: ExactAverage): String = when (value.status) {
     AverageStatus.INSUFFICIENT -> "—"
 }
 
+private fun compactRank(value: Int): String = "%,d".format(Locale.CHINA, value)
+
+private fun formatApproxRank(range: OfflineRankRange): String {
+    val point = (range.bestRank.toLong() + range.worstRank.toLong()) / 2L
+    return "约第 ${compactRank(point.toInt())} 名"
+}
+
 @Composable
 private fun SkillSummaryCard(
     estimate: SkillEstimate,
@@ -2936,6 +3043,10 @@ private fun SkillSummaryCard(
     onClick: () -> Unit
 ) {
     val total = estimate.total
+    val reproducible = estimate.reproducibleTime
+    val offlineRank = reproducible?.let { interval ->
+        OfflineWcaRankEstimator.estimate(interval.median, interval.median)
+    }
     Card(
         onClick = onClick,
         colors = CardDefaults.cardColors(containerColor = CubeTraceColors.paper),
@@ -2964,8 +3075,8 @@ private fun SkillSummaryCard(
                 )
             } else {
                 Row(modifier = Modifier.fillMaxWidth().padding(top = 10.dp), verticalAlignment = Alignment.Bottom) {
-                    Text(formatDuration(total.timeMs.median.toLong()), fontFamily = FontFamily.Monospace, fontSize = 30.sp, fontWeight = FontWeight.SemiBold)
-                    Text("常见 ${formatDuration(total.timeMs.p50Low.toLong())}–${formatDuration(total.timeMs.p50High.toLong())}", fontSize = 12.sp, color = CubeTraceColors.muted, modifier = Modifier.padding(start = 10.dp, bottom = 5.dp))
+                    Text(formatDuration(reproducible!!.median.toLong()), fontFamily = FontFamily.Monospace, fontSize = 30.sp, fontWeight = FontWeight.SemiBold)
+                    Text("常见 ${formatDuration(reproducible.p50Low.toLong())}–${formatDuration(reproducible.p50High.toLong())}", fontSize = 12.sp, color = CubeTraceColors.muted, modifier = Modifier.padding(start = 10.dp, bottom = 5.dp))
                 }
                 Text(
                     "实战 TPS ${formatTps(total.practicalTps)} · 执行 TPS ${formatTps(total.activeTps)}（估算） · ${estimate.sampleCount} 次智能成绩",
@@ -2973,6 +3084,7 @@ private fun SkillSummaryCard(
                     color = CubeTraceColors.graphite,
                     modifier = Modifier.padding(top = 4.dp)
                 )
+                offlineRank?.let { rank -> CompactRankComparison(rank) }
                 estimate.recentDeltaMs?.let { delta ->
                     val direction = if (delta < 0.0) "近期更快" else "近期更慢"
                     Text(
@@ -3038,19 +3150,30 @@ private fun SkillLevelDialog(
                 SkillAssessmentRail(assessment)
             } else {
                 val total = estimate.total
-                SectionRule("总体预测")
+                val reproducible = estimate.reproducibleTime!!
+                val offlineRank = OfflineWcaRankEstimator.estimate(
+                    reproducible.median, reproducible.median
+                )
+                SectionRule("长期稳定水平")
                 Row(modifier = Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                    MetricText("预测用时", formatDuration(total.timeMs.median.toLong()))
+                    MetricText("稳定用时", formatDuration(reproducible.median.toLong()))
                     MetricText("实战 TPS", formatTps(total.practicalTps))
                     MetricText("停顿率", formatPercent(total.pauseRate.median))
                 }
-                Text("50% ${formatDuration(total.timeMs.p50Low.toLong())}–${formatDuration(total.timeMs.p50High.toLong())} · 80% ${formatDuration(total.timeMs.p80Low.toLong())}–${formatDuration(total.timeMs.p80High.toLong())}", fontSize = 12.sp, color = CubeTraceColors.muted, modifier = Modifier.padding(top = 8.dp))
+                Text("稳定常见区间 ${formatDuration(reproducible.p50Low.toLong())}–${formatDuration(reproducible.p50High.toLong())} · 近期预测 ${formatDuration(total.timeMs.median.toLong())}", fontSize = 12.sp, color = CubeTraceColors.muted, modifier = Modifier.padding(top = 8.dp))
                 Text("样本 ${estimate.sampleCount} · 完整 ${estimate.reliableCount} · ${estimate.status.label} · ${estimate.modelVersion}", fontSize = 12.sp, color = CubeTraceColors.muted, modifier = Modifier.padding(top = 4.dp))
+                offlineRank?.let { rank -> OfflineRankCard(rank) }
                 Spacer(Modifier.height(18.dp))
                 SectionRule("当前 CFOP 评价与建议")
                 SkillAssessmentRail(assessment)
                 Spacer(Modifier.height(18.dp))
-                SectionRule("七段水平")
+                SectionRule("七段用时画像")
+                Text(
+                    "每一行都按“左边更快、右边更慢”阅读：浅蓝是大多数成绩会落入的范围，蓝带是最常见的一半，深蓝圆点是你的长期稳定用时。样本数和可靠状态单独写出，不再混在蓝条里。",
+                    fontSize = 11.sp,
+                    color = CubeTraceColors.muted,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
                 estimate.phases.forEach { phase -> SkillPhaseRow(phase) }
                 Spacer(Modifier.height(18.dp))
                 SectionRule("模型说明")
@@ -3061,6 +3184,94 @@ private fun SkillLevelDialog(
     }
 }
 
+@Composable
+private fun OfflineRankCard(estimate: OfflineRankEstimate) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = CubeTraceColors.trackSoft),
+        shape = RoundedCornerShape(10.dp),
+        modifier = Modifier.fillMaxWidth().padding(top = 12.dp)
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp)) {
+            SectionEyebrow("WCA 三阶平均 / 离线粗估")
+            RankComparisonRow("世界", "WCA 三阶平均全球分布", formatApproxRank(estimate.world))
+            HorizontalDivider(color = CubeTraceColors.line, modifier = Modifier.padding(vertical = 7.dp))
+            RankComparisonRow("中国", "WCA 三阶平均中国选手分布", formatApproxRank(estimate.china))
+            Text(
+                "按长期稳定用时的单点估计与 WCA average 分布对照；不是你的官方 WCA 排名，也不代表单次排名。",
+                fontSize = 11.sp,
+                color = CubeTraceColors.graphite,
+                modifier = Modifier.padding(top = 9.dp)
+            )
+            Text(
+                "数据 ${estimate.asOf} · ${OfflineWcaRankEstimator.SOURCE_VERSION} · APP 运行时不联网",
+                fontSize = 10.sp,
+                color = CubeTraceColors.muted,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun CompactRankComparison(estimate: OfflineRankEstimate) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 7.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(CubeTraceColors.trackSoft.copy(alpha = 0.7f))
+            .padding(horizontal = 10.dp, vertical = 8.dp)
+    ) {
+        Text("WCA 三阶平均对照", fontSize = 10.sp, color = CubeTraceColors.muted)
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text("世界", fontSize = 12.sp, color = CubeTraceColors.graphite)
+            Text(
+                formatApproxRank(estimate.world),
+                fontFamily = FontFamily.Monospace,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = CubeTraceColors.track
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 3.dp),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text("中国", fontSize = 12.sp, color = CubeTraceColors.graphite)
+            Text(
+                formatApproxRank(estimate.china),
+                fontFamily = FontFamily.Monospace,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = CubeTraceColors.track
+            )
+        }
+    }
+}
+
+@Composable
+private fun RankComparisonRow(label: String, detail: String, rank: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 7.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(label, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = CubeTraceColors.graphite)
+            Text(detail, fontSize = 10.sp, color = CubeTraceColors.muted, modifier = Modifier.padding(top = 2.dp))
+        }
+        Text(
+            rank,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 18.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = CubeTraceColors.track
+        )
+    }
+}
 @Composable
 private fun SkillAssessmentRail(assessment: SkillAssessment) {
     Card(
@@ -3085,36 +3296,93 @@ private fun SkillAssessmentRail(assessment: SkillAssessment) {
 @Composable
 private fun SkillPhaseRow(phase: com.cubetrace.app.core.analysis.SkillPhaseForecast) {
     val forecast = phase.forecast
-    Column(modifier = Modifier.fillMaxWidth().padding(top = 12.dp)) {
+    Column(modifier = Modifier.fillMaxWidth().padding(top = 14.dp)) {
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(phase.code.label, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold, modifier = Modifier.width(48.dp))
+            Text(
+                phase.code.label,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.width(48.dp)
+            )
             if (forecast == null) {
-                Text("样本 ${phase.sampleCount} · ${phase.status.label}", fontSize = 12.sp, color = CubeTraceColors.muted)
-            } else {
-                Text(formatDuration(forecast.timeMs.median.toLong()), fontFamily = FontFamily.Monospace, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                Text("${formatDuration(forecast.timeMs.p80Low.toLong())}–${formatDuration(forecast.timeMs.p80High.toLong())}", fontSize = 11.sp, color = CubeTraceColors.muted, modifier = Modifier.padding(start = 8.dp))
+                Text(
+                    if (phase.sampleCount < 5) "还差 ${5 - phase.sampleCount} 次完整样本" else "样本暂不可用",
+                    fontSize = 12.sp,
+                    color = CubeTraceColors.muted
+                )
                 Spacer(Modifier.weight(1f))
-                Text(phase.status.label, fontSize = 11.sp, color = CubeTraceColors.track)
+                Text("${phase.sampleCount} 次", fontSize = 11.sp, color = CubeTraceColors.muted)
+            } else {
+                val stable = forecast.timeMs.reproducibleInterval()
+                Text(
+                    formatDuration(stable.median.toLong()),
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text("长期稳定", fontSize = 10.sp, color = CubeTraceColors.muted, modifier = Modifier.padding(start = 6.dp))
+                Spacer(Modifier.weight(1f))
+                Text("${phase.sampleCount} 次 · ${phase.status.label}", fontSize = 11.sp, color = CubeTraceColors.track)
             }
         }
         if (forecast != null) {
-            LinearProgressIndicator(
-                progress = { (forecast.timeMs.median / forecast.timeMs.p80High.coerceAtLeast(1.0)).toFloat().coerceIn(0.08f, 1f) },
-                modifier = Modifier.fillMaxWidth().padding(start = 48.dp, top = 5.dp).height(4.dp),
-                color = CubeTraceColors.track,
-                trackColor = CubeTraceColors.trackSoft
+            PhaseIntervalTrack(
+                interval = forecast.timeMs,
+                modifier = Modifier.fillMaxWidth().padding(start = 48.dp, top = 8.dp).height(12.dp)
             )
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(start = 48.dp, top = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("快 ${formatDuration(forecast.timeMs.p80Low.toLong())}", fontSize = 9.sp, color = CubeTraceColors.muted)
+                Text(
+                    "常见 ${formatDuration(forecast.timeMs.p50Low.toLong())}–${formatDuration(forecast.timeMs.p50High.toLong())}",
+                    fontSize = 9.sp,
+                    color = CubeTraceColors.track
+                )
+                Text("慢 ${formatDuration(forecast.timeMs.p80High.toLong())}", fontSize = 9.sp, color = CubeTraceColors.muted)
+            }
             Text(
-                "${phase.sampleCount} 个样本 · ${forecast.moves.median.toInt()} 步 · 实战 TPS ${formatTps(forecast.practicalTps)} · " +
+                "平均 ${forecast.moves.median.toInt()} 步 · 实战 TPS ${formatTps(forecast.practicalTps)} · " +
                     "执行 TPS ${formatTps(forecast.activeTps)} · 停顿 ${formatPercent(forecast.pauseRate.median)}",
                 fontSize = 11.sp,
                 color = CubeTraceColors.muted,
-                modifier = Modifier.padding(start = 48.dp, top = 5.dp)
+                modifier = Modifier.padding(start = 48.dp, top = 6.dp)
             )
         }
     }
 }
 
+@Composable
+private fun PhaseIntervalTrack(
+    interval: com.cubetrace.app.core.analysis.IntervalForecast,
+    modifier: Modifier = Modifier
+) {
+    Canvas(
+        modifier = modifier.semantics {
+            contentDescription = "从左到右由快到慢，浅蓝为大多数成绩范围，蓝带为最常见的一半，深蓝圆点为长期稳定用时"
+        }
+    ) {
+        val low = interval.p80Low
+        val high = interval.p80High.coerceAtLeast(low + 1.0)
+        fun x(value: Double): Float =
+            (((value - low) / (high - low)).coerceIn(0.0, 1.0) * size.width).toFloat()
+        val corner = CornerRadius(size.height / 2f, size.height / 2f)
+        drawRoundRect(CubeTraceColors.trackSoft, cornerRadius = corner)
+        val bandStart = x(interval.p50Low)
+        val bandEnd = x(interval.p50High)
+        val bandWidth = (bandEnd - bandStart).coerceAtLeast(3.dp.toPx()).coerceAtMost(size.width - bandStart)
+        drawRoundRect(
+            color = CubeTraceColors.track.copy(alpha = 0.55f),
+            topLeft = Offset(bandStart, 0f),
+            size = Size(bandWidth, size.height),
+            cornerRadius = corner
+        )
+        val stableX = x(interval.stable)
+        drawCircle(CubeTraceColors.paper, radius = 5.dp.toPx(), center = Offset(stableX, size.height / 2f))
+        drawCircle(CubeTraceColors.track, radius = 3.2.dp.toPx(), center = Offset(stableX, size.height / 2f))
+    }
+}
 @Composable
 private fun TrendChart(solves: List<SolveRecord>) {
     val points = remember(solves) {
@@ -3560,6 +3828,8 @@ private fun CaseDetailDialog(
 private fun SolveReviewDialog(
     solve: SolveRecord,
     pauseThreshold: Int,
+    assistLabels: Boolean,
+    reducedMotion: Boolean,
     review: SolveReviewComputation,
     currentPendingSolve: Boolean,
     onDismiss: () -> Unit,
@@ -3659,7 +3929,9 @@ private fun SolveReviewDialog(
                     color = CubeTraceColors.muted,
                     modifier = Modifier.padding(top = 8.dp)
                 )
-                else -> review.insights.forEach { CoachingInsightRow(it) }
+                else -> review.insights.forEach {
+                    CoachingInsightRow(it, assistLabels = assistLabels, reducedMotion = reducedMotion)
+                }
             }
             Spacer(Modifier.height(18.dp))
             SectionRule("动作轨迹")
@@ -3727,8 +3999,14 @@ private fun SolveReviewDialog(
     }
 }
 
+private val builtInCaseById by lazy { PresetCatalog.all().associateBy { it.stableId } }
+
 @Composable
-private fun CoachingInsightRow(insight: CoachingInsight) {
+private fun CoachingInsightRow(
+    insight: CoachingInsight,
+    assistLabels: Boolean,
+    reducedMotion: Boolean
+) {
     val primary = insight.priority == CoachingPriority.PRIMARY
     Card(
         colors = CardDefaults.cardColors(containerColor = if (primary) CubeTraceColors.trackSoft else CubeTraceColors.paper),
@@ -3772,7 +4050,19 @@ private fun CoachingInsightRow(insight: CoachingInsight) {
                             CoachingTechniqueKind.FINGER_PRACTICE -> CubeTraceColors.graphite
                         }
                     )
-                    technique.notation?.let { notation ->
+                    val recommendedCase = technique.caseId?.let(builtInCaseById::get)
+                    if (
+                        technique.kind == CoachingTechniqueKind.FORMULA &&
+                        technique.notation != null &&
+                        recommendedCase != null
+                    ) {
+                        ReviewFormulaModule(
+                            cubeCase = recommendedCase,
+                            notation = technique.notation,
+                            assistLabels = assistLabels,
+                            reducedMotion = reducedMotion
+                        )
+                    } else technique.notation?.let { notation ->
                         Text(
                             notation,
                             fontFamily = FontFamily.Monospace,
@@ -3798,6 +4088,146 @@ private fun CoachingInsightRow(insight: CoachingInsight) {
                 color = CubeTraceColors.muted,
                 modifier = Modifier.padding(top = 6.dp)
             )
+        }
+    }
+}
+
+@Composable
+private fun ReviewFormulaModule(
+    cubeCase: CubeCase,
+    notation: String,
+    assistLabels: Boolean,
+    reducedMotion: Boolean
+) {
+    var playing by remember(cubeCase.stableId, notation) { mutableStateOf(false) }
+    var speed by remember(cubeCase.stableId) { mutableStateOf(1f) }
+    var frame by remember(cubeCase.stableId, notation, cubeCase.canonicalState) {
+        mutableStateOf(DemoFrame(facelets = cubeCase.canonicalState, step = 0))
+    }
+    val moves = remember(cubeCase.stableId, notation) { normalizedMoves(notation) }
+    val states = remember(cubeCase.stableId, notation, cubeCase.canonicalState) {
+        buildList {
+            var state = cubeStateFromFacelets(cubeCase.canonicalState)
+            add(state.asFacelets())
+            moves.forEach { move ->
+                state = state.apply(move)
+                add(state.asFacelets())
+            }
+        }
+    }
+    LaunchedEffect(cubeCase.stableId, notation, playing, speed) {
+        if (!playing) {
+            if (frame.activeMove != null) frame = frame.copy(activeMove = null)
+            return@LaunchedEffect
+        }
+        var step = frame.step
+        while (step < moves.size) {
+            val index = step
+            frame = DemoFrame(
+                facelets = states[index + 1],
+                step = index,
+                activeMove = moves[index].normalized,
+                animationFromFacelets = states[index]
+            )
+            val baseDelay = if (reducedMotion) 140L else 380L
+            delay((baseDelay / speed).toLong())
+            step = index + 1
+            frame = DemoFrame(facelets = states[step], step = step)
+        }
+        playing = false
+    }
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = CubeTraceColors.trackSoft.copy(alpha = 0.55f)),
+        shape = RoundedCornerShape(10.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, CubeTraceColors.track.copy(alpha = 0.18f)),
+        modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    SectionEyebrow("推荐案例")
+                    Text("${cubeCase.name} · ${cubeCase.alias}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                }
+                Text(
+                    "${frame.step.coerceAtMost(moves.size)} / ${moves.size}",
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 11.sp,
+                    color = CubeTraceColors.muted
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Box(
+                    modifier = Modifier.weight(1f).height(150.dp)
+                        .clip(RoundedCornerShape(9.dp)).background(CubeTraceColors.paper),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CaseStatePreview(
+                        stage = cubeCase.stage,
+                        facelets = cubeCase.canonicalState,
+                        modifier = Modifier.fillMaxSize().padding(8.dp),
+                        assistLabels = assistLabels
+                    )
+                }
+                Box(
+                    modifier = Modifier.weight(1f).height(150.dp)
+                        .clip(RoundedCornerShape(9.dp)).background(CubeTraceColors.paper),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Cube3DView(
+                        facelets = frame.facelets,
+                        animationFromFacelets = frame.animationFromFacelets,
+                        modifier = Modifier.fillMaxSize(),
+                        animateMove = frame.activeMove,
+                        animationKey = frame.step,
+                        reducedMotion = reducedMotion,
+                        focusF2L = cubeCase.stage == Stage.F2L,
+                        focusFacelets = if (cubeCase.stage == Stage.F2L) cubeCase.canonicalState else null,
+                        animationSpeed = speed
+                    )
+                }
+            }
+            MoveTokenRow(notation, wrap = true)
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    listOf(0.5f, 1f).forEach { candidate ->
+                        FilterChip(
+                            selected = speed == candidate,
+                            onClick = { speed = candidate },
+                            label = { Text(if (candidate == 0.5f) "0.5×" else "1×", fontSize = 11.sp) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = CubeTraceColors.track,
+                                selectedLabelColor = Color.White,
+                                containerColor = CubeTraceColors.paper,
+                                labelColor = CubeTraceColors.graphite
+                            )
+                        )
+                    }
+                }
+                Row {
+                    TextButton(onClick = {
+                        playing = false
+                        frame = DemoFrame(facelets = cubeCase.canonicalState, step = 0)
+                    }) { Text("重置") }
+                    TextButton(onClick = {
+                        if (frame.step >= moves.size) {
+                            frame = DemoFrame(facelets = cubeCase.canonicalState, step = 0)
+                        }
+                        playing = !playing
+                    }) { Text(if (playing) "暂停" else "播放") }
+                }
+            }
         }
     }
 }

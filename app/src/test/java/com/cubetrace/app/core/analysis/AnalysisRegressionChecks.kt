@@ -9,6 +9,7 @@ import com.cubetrace.app.core.cube.isCubeSolvedRelativeToCenters
 import com.cubetrace.app.core.cube.isCrossSolvedOn
 import com.cubetrace.app.core.cube.isLastLayerOrientedOn
 import com.cubetrace.app.core.cube.normalizedMoves
+import com.cubetrace.app.core.cube.validateTimerScramble
 import com.cubetrace.app.core.model.Completeness
 import com.cubetrace.app.core.model.RecordedMove
 import com.cubetrace.app.core.model.SolveRecord
@@ -57,13 +58,17 @@ object AnalysisRegressionChecks {
         techniqueMatchesVerifiedPllCase()
         catalogLastLayerRecognitionNeverMislabels()
         ordinaryFaceTurnsAreNotWideMoves()
+        timerScrambleValidationIsStrictAndHelpful()
         equivalentSmartScrambleTurnsAreRecognized()
         recoveredPhaseDoesNotClaimFormulaOrFingerEvidence()
         skillPresenterExplainsCurrentState()
         skillEstimateResistsOneExtremeSolve()
+        reproducibleLevelUsesLongTermState()
         skillEstimateStillTracksSustainedImprovement()
+        offlineRankBandsAreMonotonic()
+        rollingStatsExposeCurrentAndBestAverages()
         pbThresholdBoundaryIsExact()
-        println("AnalysisRegressionChecks: 39 passed")
+        println("AnalysisRegressionChecks: 43 passed")
     }
 
     private fun oneMoveSolve(
@@ -593,6 +598,17 @@ object AnalysisRegressionChecks {
         check(usesWideSliceOrRotation(listOf("y'")))
     }
 
+    private fun timerScrambleValidationIsStrictAndHelpful() {
+        val valid = validateTimerScramble("(R U R' U')2")
+        check(valid.valid)
+        check(valid.notation == "R U R' U' R U R' U'") { "notation=${valid.notation}" }
+        check(!validateTimerScramble("").valid)
+        check(!validateTimerScramble("r U").valid)
+        check(!validateTimerScramble("M2").valid)
+        check(!validateTimerScramble("x R").valid)
+        check(!validateTimerScramble("R U F", maxMoves = 2).valid)
+    }
+
     private fun equivalentSmartScrambleTurnsAreRecognized() {
         val solved = CubeState.solved()
         val u2 = normalizedMoves("U2").single()
@@ -699,7 +715,24 @@ object AnalysisRegressionChecks {
         check(kotlin.math.abs(after - before) < 1_000.0) {
             "one extreme solve moved the estimate too far: before=$before after=$after"
         }
+        val stableBefore = baseline.reproducibleTime?.median ?: error("baseline reproducible estimate missing")
+        val stableAfter = updated.reproducibleTime?.median ?: error("updated reproducible estimate missing")
+        check(kotlin.math.abs(stableAfter - stableBefore) < 500.0) {
+            "one extreme solve moved the long-term level too far: before=$stableBefore after=$stableAfter"
+        }
         check(Ctss1Estimator.estimate(normal.take(8), 250).recentDeltaMs == null)
+    }
+
+    private fun reproducibleLevelUsesLongTermState() {
+        val forecast = interval(9_000.0, 11_000.0).copy(
+            median = 10_000.0,
+            stable = 20_000.0,
+            formDelta = -10_000.0
+        )
+        val reproducible = forecast.reproducibleInterval()
+        check(reproducible.median == 20_000.0)
+        check(reproducible.p50Low == 18_000.0)
+        check(reproducible.p50High == 22_000.0)
     }
 
     private fun skillEstimateStillTracksSustainedImprovement() {
@@ -717,6 +750,37 @@ object AnalysisRegressionChecks {
         check((estimate.recentDeltaMs ?: 0.0) < 0.0) {
             "sustained improvement should report a negative recent delta: ${estimate.recentDeltaMs}"
         }
+    }
+
+    private fun offlineRankBandsAreMonotonic() {
+        val fast = OfflineWcaRankEstimator.estimate(9_000.0, 10_000.0)!!
+        val slow = OfflineWcaRankEstimator.estimate(18_000.0, 20_000.0)!!
+        val point = OfflineWcaRankEstimator.estimate(18_000.0, 18_000.0)!!
+        check(fast.world.bestRank <= fast.world.worstRank)
+        check(fast.china.bestRank <= fast.china.worstRank)
+        check(fast.world.worstRank < slow.world.bestRank)
+        check(fast.china.worstRank < slow.china.bestRank)
+        check(point.world.bestRank == point.world.worstRank)
+        check(point.china.bestRank == point.china.worstRank)
+    }
+
+    private fun rollingStatsExposeCurrentAndBestAverages() {
+        val durations = List(12) { 10_000L } + List(4) { 20_000L }
+        val records = durations.mapIndexed { index, duration ->
+            SolveRecord(
+                id = "rolling-$index",
+                sessionId = "test",
+                sessionName = "test",
+                scramble = "",
+                durationMs = duration,
+                startedAt = index.toLong()
+            )
+        }
+        val stats = rollingStats(records)
+        check(stats.currentAo5.valueMs != null && stats.bestAo5.valueMs != null)
+        check(stats.currentAo12.valueMs != null && stats.bestAo12.valueMs != null)
+        check(stats.currentAo5.valueMs!! > stats.bestAo5.valueMs!!)
+        check(stats.currentAo12.valueMs!! > stats.bestAo12.valueMs!!)
     }
 
     private fun pbThresholdBoundaryIsExact() {
