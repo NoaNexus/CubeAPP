@@ -68,7 +68,8 @@ object AnalysisRegressionChecks {
         offlineRankBandsAreMonotonic()
         rollingStatsExposeCurrentAndBestAverages()
         pbThresholdBoundaryIsExact()
-        println("AnalysisRegressionChecks: 43 passed")
+        phaseFormulaUsesReplayBoundaries()
+        println("AnalysisRegressionChecks: 44 passed")
     }
 
     private fun oneMoveSolve(
@@ -798,6 +799,24 @@ object AnalysisRegressionChecks {
         val threshold = nextPbThreshold(records, 5)
         check(threshold is PbThreshold.AtMost)
         check(threshold.rawMs == 11_999L) { "threshold=${threshold.rawMs}" }
+    }
+
+    private fun phaseFormulaUsesReplayBoundaries() {
+        val moves = listOf("R", "U", "R'", "U'", "F", "F'").mapIndexed { index, code ->
+            RecordedMove(index, code, (index + 1L) * 100L, sequence = index + 1)
+        }
+        val phase = PhaseMetric(
+            code = PhaseCode.F2,
+            startMs = 200L,
+            endMs = 500L,
+            startOrdinalExclusive = 2,
+            endOrdinalInclusive = 5,
+            summary = MetricSummary(300L, 3, 0L, 0.0, 10.0, 10.0, 100L),
+            confidence = 1.0,
+            availability = PhaseAvailability.AVAILABLE
+        )
+        check(executedMovesForPhase(phase, moves).map { it.code } == listOf("R'", "U'", "F"))
+        check(executedMovesForPhase(phase.copy(startOrdinalExclusive = 4, endOrdinalInclusive = 4), moves).isEmpty())
     }
 
     private fun interval(low: Double, high: Double) = IntervalForecast(

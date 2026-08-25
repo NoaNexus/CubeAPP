@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.5 · seamless updates and phase formulas
+
+- Adds an Android signing-certificate lineage so existing debug-signed installations can migrate to the stable release certificate without uninstalling or losing local data.
+- Shows the exact recorded turn sequence beside each C / F1 / F2 / F3 / F4 / OLL / PLL stage in deep review, while clearly marking inferred recovery moves and zero-move stage boundaries.
+
 ## 0.2.4 · stable level, richer review and custom practice
 
 - Shows recognition-matched OLL / PLL recommendations directly in deep review with the formula, current-state diagram and smooth embedded 3D playback.

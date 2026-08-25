@@ -142,6 +142,7 @@ import com.cubetrace.app.core.analysis.SkillStatus
 import com.cubetrace.app.core.analysis.SolveAnalysis
 import com.cubetrace.app.core.analysis.analyzeSolve
 import com.cubetrace.app.core.analysis.buildCoachingInsights
+import com.cubetrace.app.core.analysis.executedMovesForPhase
 import com.cubetrace.app.core.analysis.nextPbThreshold
 import com.cubetrace.app.core.analysis.rollingStats
 import com.cubetrace.app.core.cube.CubeState
@@ -3956,7 +3957,11 @@ private fun SolveReviewDialog(
                             modifier = Modifier.padding(top = 8.dp)
                         )
                     }
-                    PhaseSummary(analysis)
+                    PhaseSummary(
+                        analysis = analysis,
+                        moves = reviewMoves,
+                        recoveredOrdinals = recoveredReplay?.recoveredOrdinals ?: emptySet()
+                    )
                 } else {
                     Text(
                         "CFOP 分段：不可用${analysis.reason?.let { " · $it" } ?: ""}",
@@ -4332,48 +4337,80 @@ private fun PhaseStrip(analysis: SolveAnalysis) {
 }
 
 @Composable
-private fun PhaseSummary(analysis: SolveAnalysis) {
+private fun PhaseSummary(
+    analysis: SolveAnalysis,
+    moves: List<RecordedMove>,
+    recoveredOrdinals: Set<Int> = emptySet()
+) {
     Column(modifier = Modifier.padding(top = 8.dp)) {
         analysis.phases.filter { it.availability != com.cubetrace.app.core.analysis.PhaseAvailability.UNAVAILABLE }.forEach { phase ->
-            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(phase.code.label, fontWeight = FontWeight.SemiBold, modifier = Modifier.width(48.dp))
-                val availabilityText = when (phase.availability) {
-                    com.cubetrace.app.core.analysis.PhaseAvailability.PROVEN_SKIP -> "跳过"
-                    com.cubetrace.app.core.analysis.PhaseAvailability.SAME_MOVE_COMPLETION -> "同一步"
-                    com.cubetrace.app.core.analysis.PhaseAvailability.GAP_AFFECTED -> "时间估算"
-                    else -> null
-                }
-                Text(
-                    availabilityText ?: formatDuration(phase.summary.durationMs),
-                    fontFamily = FontFamily.Monospace,
-                    modifier = Modifier.width(72.dp)
-                )
-                Text(
-                    when (phase.availability) {
-                        com.cubetrace.app.core.analysis.PhaseAvailability.GAP_AFFECTED -> "${phase.summary.moveCount} 步\n含推定"
-                        else -> if (availabilityText != null) "—" else "${phase.summary.moveCount} 步\n${formatPercent(phase.summary.durationMs.toDouble() / analysis.total.durationMs.coerceAtLeast(1L))}"
-                    },
-                    fontSize = 12.sp,
-                    color = CubeTraceColors.muted,
-                    modifier = Modifier.width(58.dp)
-                )
-                Column(modifier = Modifier.weight(1f)) {
+            val availabilityText = when (phase.availability) {
+                com.cubetrace.app.core.analysis.PhaseAvailability.PROVEN_SKIP -> "跳过"
+                com.cubetrace.app.core.analysis.PhaseAvailability.SAME_MOVE_COMPLETION -> "同一步"
+                com.cubetrace.app.core.analysis.PhaseAvailability.GAP_AFFECTED -> "时间估算"
+                else -> null
+            }
+            val phaseMoves = executedMovesForPhase(phase, moves)
+            val formulaText = when {
+                phaseMoves.isNotEmpty() -> phaseMoves.mapIndexed { localIndex, move ->
+                    val replayIndex = phase.startOrdinalExclusive + localIndex
+                    if (replayIndex in recoveredOrdinals) "〔推定 ${move.code}〕" else move.code
+                }.joinToString(" ")
+                phase.availability == com.cubetrace.app.core.analysis.PhaseAvailability.SAME_MOVE_COMPLETION ->
+                    "与上一阶段由同一步完成"
+                else -> "无需独立动作"
+            }
+            Column(modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(phase.code.label, fontWeight = FontWeight.SemiBold, modifier = Modifier.width(48.dp))
+                    Text(
+                        availabilityText ?: formatDuration(phase.summary.durationMs),
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.width(72.dp)
+                    )
                     Text(
                         when (phase.availability) {
-                            com.cubetrace.app.core.analysis.PhaseAvailability.GAP_AFFECTED -> "局面边界已恢复 · TPS 与停顿不计入分析"
-                            else -> if (availabilityText != null) "已证明" else "实战 ${formatTps(phase.summary.totalTps)} · 执行 ${formatTps(phase.summary.activeTps)} TPS"
+                            com.cubetrace.app.core.analysis.PhaseAvailability.GAP_AFFECTED -> "${phase.summary.moveCount} 步\n含推定"
+                            else -> if (availabilityText != null) "—" else "${phase.summary.moveCount} 步\n${formatPercent(phase.summary.durationMs.toDouble() / analysis.total.durationMs.coerceAtLeast(1L))}"
                         },
                         fontSize = 12.sp,
-                        color = CubeTraceColors.muted
+                        color = CubeTraceColors.muted,
+                        modifier = Modifier.width(58.dp)
                     )
-                    if (availabilityText == null) {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            "停顿 ${formatPercent(phase.summary.pauseRate)} · 最长 ${phase.summary.longestGapMs?.let(::formatDuration) ?: "—"}",
-                            fontSize = 11.sp,
-                            color = CubeTraceColors.muted,
-                            modifier = Modifier.padding(top = 2.dp)
+                            when (phase.availability) {
+                                com.cubetrace.app.core.analysis.PhaseAvailability.GAP_AFFECTED -> "局面边界已恢复 · TPS 与停顿不计入分析"
+                                else -> if (availabilityText != null) "已证明" else "实战 ${formatTps(phase.summary.totalTps)} · 执行 ${formatTps(phase.summary.activeTps)} TPS"
+                            },
+                            fontSize = 12.sp,
+                            color = CubeTraceColors.muted
                         )
+                        if (availabilityText == null) {
+                            Text(
+                                "停顿 ${formatPercent(phase.summary.pauseRate)} · 最长 ${phase.summary.longestGapMs?.let(::formatDuration) ?: "—"}",
+                                fontSize = 11.sp,
+                                color = CubeTraceColors.muted,
+                                modifier = Modifier.padding(top = 2.dp)
+                            )
+                        }
                     }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Text("实际执行", fontSize = 11.sp, color = CubeTraceColors.muted, modifier = Modifier.width(72.dp))
+                    Text(
+                        formulaText,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 13.sp,
+                        lineHeight = 20.sp,
+                        color = if (phaseMoves.isEmpty()) CubeTraceColors.muted else CubeTraceColors.graphite,
+                        modifier = Modifier.weight(1f).semantics {
+                            contentDescription = "${phase.code.label} 实际执行 $formulaText"
+                        }
+                    )
                 }
             }
             HorizontalDivider(color = CubeTraceColors.line)

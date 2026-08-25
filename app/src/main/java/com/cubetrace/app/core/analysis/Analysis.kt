@@ -125,6 +125,17 @@ data class SolveAnalysis(
 )
 
 /**
+ * Returns the physical turns attributed to a CFOP phase. Phase boundaries are
+ * replay-state indexes: the start is inclusive in the move list and the end is
+ * exclusive, even though the persisted field names describe state ordinals.
+ */
+fun executedMovesForPhase(phase: PhaseMetric, moves: List<RecordedMove>): List<RecordedMove> {
+    val start = phase.startOrdinalExclusive.coerceIn(0, moves.size)
+    val end = phase.endOrdinalInclusive.coerceIn(start, moves.size)
+    return moves.subList(start, end)
+}
+
+/**
  * An exact average keeps the integer sum and divisor until presentation. This
  * prevents a displayed tie from hiding a real one-millisecond PB difference.
  */
