@@ -3917,6 +3917,15 @@ private fun SolveReviewDialog(
                 }
             }
             Spacer(Modifier.height(18.dp))
+            SectionRule("全程三维还原")
+            SolveReplay3DModule(
+                solveId = solve.id,
+                analysis = analysis,
+                loading = review.loading,
+                reducedMotion = reducedMotion
+            )
+
+            Spacer(Modifier.height(18.dp))
             SectionRule("本次分析与提速建议")
             when {
                 review.loading -> Text("正在生成可追溯建议…", fontSize = 13.sp, color = CubeTraceColors.muted, modifier = Modifier.padding(top = 8.dp))
@@ -4005,6 +4014,221 @@ private fun SolveReviewDialog(
 }
 
 private val builtInCaseById by lazy { PresetCatalog.all().associateBy { it.stableId } }
+
+@Composable
+private fun SolveReplay3DModule(
+    solveId: String,
+    analysis: SolveAnalysis?,
+    loading: Boolean,
+    reducedMotion: Boolean
+) {
+    val replay = analysis?.replay
+    val replayReady = replay?.valid == true &&
+        replay.parsedMoves.isNotEmpty() &&
+        replay.states.size == replay.parsedMoves.size + 1
+    when {
+        loading -> Text(
+            "正在重建全程局面…",
+            fontSize = 13.sp,
+            color = CubeTraceColors.muted,
+            modifier = Modifier.padding(top = 8.dp)
+        )
+        !replayReady -> Text(
+            "这次动作证据不足，无法生成可靠的全程三维回放。",
+            fontSize = 13.sp,
+            color = CubeTraceColors.muted,
+            modifier = Modifier.padding(top = 8.dp)
+        )
+        else -> SolveReplay3DPlayer(
+            solveId = solveId,
+            analysis = analysis,
+            moves = replay.parsedMoves,
+            states = replay.states,
+            recoveredOrdinals = replay.recoveredOrdinals,
+            reducedMotion = reducedMotion
+        )
+    }
+}
+
+@Composable
+private fun SolveReplay3DPlayer(
+    solveId: String,
+    analysis: SolveAnalysis,
+    moves: List<RecordedMove>,
+    states: List<String>,
+    recoveredOrdinals: Set<Int>,
+    reducedMotion: Boolean
+) {
+    var open by remember(solveId) { mutableStateOf(false) }
+    if (!open) {
+        OutlinedButton(
+            onClick = { open = true },
+            modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
+        ) {
+            Text("打开全程三维回放 · ${moves.size} 步")
+        }
+        return
+    }
+
+    var playing by remember(solveId) { mutableStateOf(false) }
+    var speed by remember(solveId) { mutableStateOf(1f) }
+    var frame by remember(solveId, states.first(), states.size) {
+        mutableStateOf(DemoFrame(facelets = states.first(), step = 0))
+    }
+    LaunchedEffect(solveId, playing, speed, reducedMotion, moves.size, states.size) {
+        if (!playing) {
+            if (frame.activeMove != null) {
+                val completedStep = (frame.step + 1).coerceAtMost(moves.size)
+                frame = DemoFrame(facelets = states[completedStep], step = completedStep)
+            }
+            return@LaunchedEffect
+        }
+        var step = frame.step.coerceIn(0, moves.size)
+        while (step < moves.size) {
+            val index = step
+            frame = DemoFrame(
+                facelets = states[index + 1],
+                step = index,
+                activeMove = moves[index].code,
+                animationFromFacelets = states[index]
+            )
+            val baseDelay = if (reducedMotion) 140L else 380L
+            delay((baseDelay / speed).toLong())
+            step = index + 1
+            frame = DemoFrame(facelets = states[step], step = step)
+        }
+        playing = false
+    }
+
+    val currentMove = moves.getOrNull(frame.step)
+    val currentPhase = analysis.phases.firstOrNull { phase ->
+        frame.step in phase.startOrdinalExclusive until phase.endOrdinalInclusive
+    }
+    val currentMoveIsRecovered = frame.step in recoveredOrdinals
+    Card(
+        colors = CardDefaults.cardColors(containerColor = CubeTraceColors.paper),
+        shape = RoundedCornerShape(12.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, CubeTraceColors.line),
+        modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    SectionEyebrow("实战动作回放${currentPhase?.let { " · ${it.code.label}" } ?: ""}")
+                    Text(
+                        when {
+                            frame.step >= moves.size -> "还原完成"
+                            frame.activeMove != null && currentMoveIsRecovered -> "正在执行：推定 ${currentMove?.code}"
+                            frame.activeMove != null -> "正在执行：${currentMove?.code}"
+                            currentMoveIsRecovered -> "下一步：推定 ${currentMove?.code}"
+                            else -> "下一步：${currentMove?.code}"
+                        },
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+                TextButton(onClick = {
+                    playing = false
+                    open = false
+                }) { Text("收起") }
+            }
+            Cube3DView(
+                facelets = frame.facelets,
+                animationFromFacelets = frame.animationFromFacelets,
+                modifier = Modifier.fillMaxWidth().height(260.dp),
+                animateMove = frame.activeMove,
+                animationKey = frame.step,
+                reducedMotion = reducedMotion,
+                animationSpeed = speed,
+                cubeFrame = SmartCubeFrame.OFFICIAL_WHITE_GREEN
+            )
+            Slider(
+                value = frame.step.toFloat(),
+                onValueChange = { value ->
+                    val target = value.roundToInt().coerceIn(0, moves.size)
+                    playing = false
+                    frame = DemoFrame(facelets = states[target], step = target)
+                },
+                valueRange = 0f..moves.size.toFloat(),
+                enabled = !playing,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "第 ${frame.step.coerceAtMost(moves.size)} / ${moves.size} 步",
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.sp,
+                    color = CubeTraceColors.muted
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    listOf(0.5f, 1f, 2f).forEach { candidate ->
+                        FilterChip(
+                            selected = speed == candidate,
+                            onClick = { speed = candidate },
+                            enabled = !playing,
+                            label = {
+                                Text(
+                                    if (candidate == 0.5f) "0.5×" else "${candidate.toInt()}×",
+                                    fontSize = 11.sp
+                                )
+                            },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = CubeTraceColors.track,
+                                selectedLabelColor = Color.White,
+                                containerColor = CubeTraceColors.trackSoft,
+                                labelColor = CubeTraceColors.graphite
+                            )
+                        )
+                    }
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                TextButton(
+                    enabled = frame.step > 0 && !playing,
+                    onClick = {
+                        val target = (frame.step - 1).coerceAtLeast(0)
+                        frame = DemoFrame(facelets = states[target], step = target)
+                    }
+                ) { Text("上一步") }
+                TextButton(onClick = {
+                    playing = false
+                    frame = DemoFrame(facelets = states.first(), step = 0)
+                }) { Text("重置") }
+                TextButton(
+                    enabled = frame.step < moves.size && !playing,
+                    onClick = {
+                        val target = (frame.step + 1).coerceAtMost(moves.size)
+                        frame = DemoFrame(facelets = states[target], step = target)
+                    }
+                ) { Text("下一步") }
+                Button(onClick = {
+                    if (frame.step >= moves.size) {
+                        frame = DemoFrame(facelets = states.first(), step = 0)
+                    }
+                    playing = !playing
+                }) { Text(if (playing) "暂停" else "播放") }
+            }
+            Text(
+                "可拖动进度条或逐步观察；动画速度只影响观看，不会改写本次实战时间。",
+                fontSize = 11.sp,
+                color = CubeTraceColors.muted,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+        }
+    }
+}
 
 @Composable
 private fun CoachingInsightRow(
@@ -4122,7 +4346,10 @@ private fun ReviewFormulaModule(
     }
     LaunchedEffect(cubeCase.stableId, notation, playing, speed) {
         if (!playing) {
-            if (frame.activeMove != null) frame = frame.copy(activeMove = null)
+            if (frame.activeMove != null) {
+                val completedStep = (frame.step + 1).coerceAtMost(moves.size)
+                frame = DemoFrame(facelets = states[completedStep], step = completedStep)
+            }
             return@LaunchedEffect
         }
         var step = frame.step

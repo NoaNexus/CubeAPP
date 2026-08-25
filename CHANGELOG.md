@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.6 · full solve 3D replay
+
+- Adds an expandable full-solve 3D replay to deep review, using the analyzer's verified start state and every recorded move through the solved state.
+- Supports play/pause, previous/next step, scrubbing and 0.5× / 1× / 2× viewing speeds while preserving the existing flicker-free turn renderer.
+
 ## 0.2.5 · seamless updates and phase formulas
 
 - Adds an Android signing-certificate lineage so existing debug-signed installations can migrate to the stable release certificate without uninstalling or losing local data.
