@@ -4118,7 +4118,7 @@ private fun SolveReplay3DPlayer(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    SectionEyebrow("实战动作回放${currentPhase?.let { " · ${it.code.label}" } ?: ""}")
+                    SectionEyebrow("实战动作回放 · 黄顶蓝前${currentPhase?.let { " · ${it.code.label}" } ?: ""}")
                     Text(
                         when {
                             frame.step >= moves.size -> "还原完成"
@@ -4145,7 +4145,7 @@ private fun SolveReplay3DPlayer(
                 animationKey = frame.step,
                 reducedMotion = reducedMotion,
                 animationSpeed = speed,
-                cubeFrame = SmartCubeFrame.OFFICIAL_WHITE_GREEN
+                cubeFrame = SmartCubeFrame.PERSONAL_YELLOW_BLUE
             )
             Slider(
                 value = frame.step.toFloat(),

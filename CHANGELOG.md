@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.7 · personal solve replay orientation
+
+- Shows full-solve deep-review playback in the personal yellow-top, blue-front CFOP frame instead of the official white-top, green-front scramble frame.
+
 ## 0.2.6 · full solve 3D replay
 
 - Adds an expandable full-solve 3D replay to deep review, using the analyzer's verified start state and every recorded move through the solved state.
