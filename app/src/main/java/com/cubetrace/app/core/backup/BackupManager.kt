@@ -25,7 +25,7 @@ class BackupManager(private val context: Context, private val repository: LocalR
             solves.forEach { append(solveJson(it)).append('\n') }
         }.toByteArray()
         files["manifest.json"] = """
-            {"formatVersion":"1","appVersion":"0.1.0","schemaVersion":1,"presetVersion":"${PresetCatalog.VERSION}","counts":{"cases":${cases.size},"solves":${solves.size}},"optionalFeatures":["move-events"]}
+            {"formatVersion":"1","appVersion":"0.3.0","schemaVersion":2,"presetVersion":"${PresetCatalog.VERSION}","counts":{"cases":${cases.size},"solves":${solves.size}},"optionalFeatures":["move-events","rotation-events"]}
         """.trimIndent().toByteArray()
         files["user-data.jsonl"] = userData
         files["licenses/NOTICE.md"] = "CubeTrace is GPL-3.0-only. Third-party provenance is shipped in the source tree.\n".toByteArray()
@@ -51,7 +51,7 @@ class BackupManager(private val context: Context, private val repository: LocalR
     """.trimIndent()
 
     private fun solveJson(item: SolveRecord): String = """
-        {"type":"solve","id":"${escape(item.id)}","session":"${escape(item.sessionName)}","scramble":"${escape(item.scramble)}","durationMs":${item.durationMs},"startedAt":${item.startedAt},"penalty":"${displayPenalty(item)}","source":"${item.source.name}","complete":${item.completeness == com.cubetrace.app.core.model.Completeness.COMPLETE},"moves":${item.moves.size}}
+        {"type":"solve","id":"${escape(item.id)}","session":"${escape(item.sessionName)}","scramble":"${escape(item.scramble)}","durationMs":${item.durationMs},"startedAt":${item.startedAt},"penalty":"${displayPenalty(item)}","source":"${item.source.name}","complete":${item.completeness == com.cubetrace.app.core.model.Completeness.COMPLETE},"moves":${item.moves.size},"orientationTracked":${item.orientationTracked},"rotations":${item.rotationEvents.size}}
     """.trimIndent()
 
     private fun escape(value: String): String = value

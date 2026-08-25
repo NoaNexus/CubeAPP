@@ -24,7 +24,7 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
 
-const val ANALYZER_VERSION = "2.1.0"
+const val ANALYZER_VERSION = "2.2.0"
 private const val MODEL_VERSION = "CTSS-1.2.0"
 private const val DAY_MS = 86_400_000L
 
@@ -473,21 +473,16 @@ private fun recoverSingleMissingMove(
 }
 
 /**
- * Detects the first visible CFOP milestones in a replay.
+ * Detects the first observable CFOP milestones in a replay.
  *
- * The solve orientation is deliberately not taken from SolveRecord.crossFace:
- * a user may solve white, yellow, red, or any other face as the cross. Every
- * face is evaluated as a candidate, then the candidate with the strongest
- * independently observable F2L -> OLL -> solved chain is selected. This keeps
- * an accidental early cross on an unrelated face from locking the analysis to
- * the wrong bottom color. Boundaries within the selected chain are always the
- * first observed state, even if a later move temporarily changes that stage.
+ * Every possible cross color is evaluated. F1-F4 are the first observations
+ * after Cross in which each physical slot is solved; a later algorithm may
+ * temporarily move a solved slot without erasing the already observed stage.
+ * Candidate selection then favors the face with the richest non-final evidence,
+ * preventing a coincidental OLL on an unrelated face from owning the solve.
  */
 private fun detectionForFace(states: List<String>, face: Char): CfopDetection? {
     val crossEnd = states.indices.firstOrNull { isCrossSolvedOn(states[it], face) } ?: return null
-    // F1/F2/F3/F4 are the first state in which each individual slot is
-    // complete after the first observed cross.  Several slots may complete
-    // on the same move, which is represented by equal state indexes.
     val slotEndings = (0..3).map { slot ->
         (crossEnd..states.lastIndex).firstOrNull { index ->
             slot in f2lSolvedSlotsOn(states[index], face)
@@ -496,7 +491,6 @@ private fun detectionForFace(states: List<String>, face: Char): CfopDetection? {
     val f2lEnd = (crossEnd..states.lastIndex).firstOrNull { index ->
         isF2lSolvedOn(states[index], face)
     }
-
     val ollEnd = f2lEnd?.let { start ->
         (start..states.lastIndex).firstOrNull { index ->
             isLastLayerOrientedOn(states[index], face)
@@ -507,7 +501,6 @@ private fun detectionForFace(states: List<String>, face: Char): CfopDetection? {
             isCubeSolvedRelativeToCenters(states[index])
         }
     }
-
     return CfopDetection(
         crossFace = face,
         crossEnd = crossEnd,
@@ -517,21 +510,35 @@ private fun detectionForFace(states: List<String>, face: Char): CfopDetection? {
         slotEndings = slotEndings
     )
 }
-
 private fun CfopDetection.distinctMilestoneCount(): Int =
     (listOfNotNull(crossEnd, f2lEnd, ollEnd, solvedEnd) + slotEndings.filterNotNull()).distinct().size
 
-private fun detectCfop(states: List<String>): CfopDetection {
+private fun CfopDetection.nonFinalMilestoneCount(): Int {
+    val solved = solvedEnd ?: return 0
+    return (listOfNotNull(crossEnd, f2lEnd, ollEnd) + slotEndings.filterNotNull()).count { it < solved }
+}
+
+private fun CfopDetection.hasOnlyFinalPostCrossEvidence(): Boolean {
+    val solved = solvedEnd ?: return false
+    val postCross = slotEndings.filterNotNull() + listOfNotNull(f2lEnd, ollEnd)
+    return postCross.size == 6 && postCross.all { it == solved }
+}
+
+private fun detectCfop(states: List<String>, preferredCrossFace: Char? = null): CfopDetection {
     val empty = CfopDetection(null, null, null, null, null, List(4) { null })
     if (states.isEmpty()) return empty
     val candidates = cfopCrossFaces().mapNotNull { detectionForFace(states, it) }
     return candidates.minWithOrNull(
         compareByDescending<CfopDetection> {
-            it.ollEnd != null && it.solvedEnd != null && it.ollEnd < it.solvedEnd
+            it.nonFinalMilestoneCount()
+        }.thenByDescending {
+            it.distinctMilestoneCount()
         }.thenByDescending {
             it.f2lEnd != null && it.solvedEnd != null && it.f2lEnd < it.solvedEnd
         }.thenByDescending {
-            it.distinctMilestoneCount()
+            it.ollEnd != null && it.solvedEnd != null && it.ollEnd < it.solvedEnd
+        }.thenByDescending {
+            it.crossFace == preferredCrossFace
         }.thenBy {
             it.ollEnd ?: Int.MAX_VALUE
         }.thenBy {
@@ -634,12 +641,16 @@ fun analyzeSolve(solve: SolveRecord, pauseThresholdMs: Int): SolveAnalysis? {
     val validation = replayValidation(solve)
     val states = validation.states
     val moves = validation.parsedMoves
-    val detection = detectCfop(states)
+    val detection = detectCfop(states, solve.crossFace)
     val boundaries = listOfNotNull(detection.crossEnd, detection.f2lEnd, detection.ollEnd, detection.solvedEnd)
     val monotonic = boundaries.zipWithNext().all { (start, end) -> end >= start }
     val fullBoundaries = detection.crossEnd != null && detection.f2lEnd != null &&
         detection.ollEnd != null && detection.solvedEnd != null && detection.slotEndings.all { it != null }
-    val boundaryComplete = validation.valid && monotonic && fullBoundaries
+    // A replay whose milestones collapse to only the initial/final evidence does
+    // not prove a seven-stage CFOP solve. Do not present duplicated "same move"
+    // phases merely because the final solved cube satisfies every predicate.
+    val ambiguousFinalOnly = fullBoundaries && detection.hasOnlyFinalPostCrossEvidence()
+    val boundaryComplete = validation.valid && monotonic && fullBoundaries && !ambiguousFinalOnly
     val totalFactsReliable = moves.isNotEmpty() && validation.timeMonotonic && validation.sequenceComplete &&
         moves.none { it.gap } && validation.recoveredMoveCount == 0
     val rawTotal = if (moves.isNotEmpty()) metricSummary(moves, 0, moves.size, 0L, solve.durationMs, pauseThresholdMs) else MetricSummary(solve.durationMs.coerceAtLeast(0L), 0, 0L, 0.0, null, null, null)
@@ -658,6 +669,7 @@ fun analyzeSolve(solve: SolveRecord, pauseThresholdMs: Int): SolveAnalysis? {
     val reasonCode = when {
         validation.reasonCode != null -> validation.reasonCode
         !monotonic -> AnalysisReasonCode.NON_MONOTONIC_BOUNDARIES
+        ambiguousFinalOnly -> AnalysisReasonCode.AMBIGUOUS_FINAL_ONLY
         detection.crossEnd == null -> AnalysisReasonCode.CROSS_NOT_FOUND
         detection.f2lEnd == null || detection.slotEndings.any { it == null } -> AnalysisReasonCode.F2L_NOT_FOUND
         detection.ollEnd == null -> AnalysisReasonCode.OLL_NOT_FOUND
@@ -683,7 +695,7 @@ fun analyzeSolve(solve: SolveRecord, pauseThresholdMs: Int): SolveAnalysis? {
             AnalysisReasonCode.UNPARSEABLE_MOVE,
             AnalysisReasonCode.SEQUENCE_GAP,
             AnalysisReasonCode.TIME_NON_MONOTONIC
-        )) {
+        ) || ambiguousFinalOnly) {
         PhaseCode.entries.map(::metricUnavailable)
     } else {
         val cross = detection.crossEnd
@@ -701,7 +713,9 @@ fun analyzeSolve(solve: SolveRecord, pauseThresholdMs: Int): SolveAnalysis? {
             PhaseCode.entries.map(::metricUnavailable)
         } else {
             val phaseEnds = if (slots.size == 4 && f2l != null && oll != null && solved != null) {
-                listOf(cross) + slots + listOf(oll, solved)
+                // F4 is stable completion of the full first two layers. Use that
+                // explicit boundary when several slots are completed by one move.
+                listOf(cross) + slots.take(3) + listOf(f2l, oll, solved)
             } else null
             if (phaseEnds == null || phaseEnds.zipWithNext().any { (start, end) -> end < start }) {
                 PhaseCode.entries.map(::metricUnavailable)

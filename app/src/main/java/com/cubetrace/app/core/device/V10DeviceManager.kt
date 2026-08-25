@@ -73,6 +73,12 @@ data class DeviceLiveState(
  * solve recording; Compose may skip UI snapshots, but it must never skip one
  * of these events.
  */
+data class DeviceOrientationEvent(
+    val orientation: Quaternion,
+    val receivedAtElapsedMs: Long,
+    val calibrationEpoch: Int
+)
+
 data class DeviceMoveEvent(
     val sequence: Int,
     val previousSequence: Int?,
@@ -100,6 +106,8 @@ class V10DeviceManager(private val context: Context) {
     val liveState: StateFlow<DeviceLiveState> = _liveState
     private val moveEventChannel = Channel<DeviceMoveEvent>(Channel.UNLIMITED)
     val moveEvents: Flow<DeviceMoveEvent> = moveEventChannel.receiveAsFlow()
+    private val orientationEventChannel = Channel<DeviceOrientationEvent>(Channel.UNLIMITED)
+    val orientationEvents: Flow<DeviceOrientationEvent> = orientationEventChannel.receiveAsFlow()
 
     private var currentGatt: BluetoothGatt? = null
     private var currentDevice: BluetoothDevice? = null
@@ -115,6 +123,7 @@ class V10DeviceManager(private val context: Context) {
     private val operations = ArrayDeque<GattOperation>()
     private var operationInFlight = false
     private val continuity = QuaternionContinuity()
+    private var orientationCalibrationEpoch = 0
     private val mainHandler = Handler(Looper.getMainLooper())
     private val faceletReconcileRunnable = Runnable {
         if (currentGatt != null && writeCharacteristic != null &&
@@ -741,11 +750,19 @@ class V10DeviceManager(private val context: Context) {
                 return
             }
             orientationReference = raw
+            orientationCalibrationEpoch++
             emittedOrientation = Quaternion.identity()
-            _liveState.value = _liveState.value.copy(orientation = Quaternion.identity())
+            val identity = Quaternion.identity()
+            orientationEventChannel.trySend(
+                DeviceOrientationEvent(identity, SystemClock.elapsedRealtime(), orientationCalibrationEpoch)
+            )
+            _liveState.value = _liveState.value.copy(orientation = identity)
             return
         }
         val relative = raw.relativeTo(orientationReference ?: raw)
+        orientationEventChannel.trySend(
+            DeviceOrientationEvent(relative, SystemClock.elapsedRealtime(), orientationCalibrationEpoch)
+        )
         val previous = emittedOrientation
         if (previous != null && quaternionAngle(previous, relative) < ORIENTATION_NOISE_RAD) return
         emittedOrientation = relative
@@ -759,8 +776,13 @@ class V10DeviceManager(private val context: Context) {
     fun calibrateOrientation() {
         val raw = latestRawOrientation ?: return
         orientationReference = raw
+        orientationCalibrationEpoch++
         emittedOrientation = Quaternion.identity()
-        _liveState.value = _liveState.value.copy(orientation = Quaternion.identity())
+        val identity = Quaternion.identity()
+        orientationEventChannel.trySend(
+            DeviceOrientationEvent(identity, SystemClock.elapsedRealtime(), orientationCalibrationEpoch)
+        )
+        _liveState.value = _liveState.value.copy(orientation = identity)
     }
 
     private fun quaternionAngle(from: Quaternion, to: Quaternion): Double =

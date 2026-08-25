@@ -11,6 +11,8 @@ import com.cubetrace.app.core.model.AlgorithmVariant
 import com.cubetrace.app.core.model.CaseFilter
 import com.cubetrace.app.core.model.Completeness
 import com.cubetrace.app.core.model.CubeCase
+import com.cubetrace.app.core.model.CubeRotationAxis
+import com.cubetrace.app.core.model.CubeRotationEvent
 import com.cubetrace.app.core.model.Penalty
 import com.cubetrace.app.core.model.RecordedMove
 import com.cubetrace.app.core.model.MoveTimeQuality
@@ -20,7 +22,7 @@ import com.cubetrace.app.core.model.Stage
 import java.util.UUID
 
 private const val DATABASE_NAME = "cubetrace.db"
-private const val DATABASE_VERSION = 15
+private const val DATABASE_VERSION = 16
 
 private class CubeTraceDb(context: Context) : SQLiteOpenHelper(
     context,
@@ -89,7 +91,8 @@ private class CubeTraceDb(context: Context) : SQLiteOpenHelper(
                 end_facelets TEXT,
                 start_sequence INTEGER,
                 end_sequence INTEGER,
-                cross_face TEXT NOT NULL DEFAULT 'D'
+                cross_face TEXT NOT NULL DEFAULT 'D',
+                orientation_tracked INTEGER NOT NULL DEFAULT 0
             )
             """.trimIndent()
         )
@@ -105,6 +108,21 @@ private class CubeTraceDb(context: Context) : SQLiteOpenHelper(
                 device_time_ms INTEGER,
                 received_at_elapsed_ms INTEGER,
                 time_quality TEXT NOT NULL DEFAULT 'UNKNOWN',
+                PRIMARY KEY(solve_id, ordinal),
+                FOREIGN KEY(solve_id) REFERENCES solve(id) ON DELETE CASCADE
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            """
+            CREATE TABLE rotation_event (
+                solve_id TEXT NOT NULL,
+                ordinal INTEGER NOT NULL,
+                axis TEXT NOT NULL,
+                amount INTEGER NOT NULL,
+                started_at_ms INTEGER NOT NULL,
+                ended_at_ms INTEGER NOT NULL,
+                confidence REAL NOT NULL,
                 PRIMARY KEY(solve_id, ordinal),
                 FOREIGN KEY(solve_id) REFERENCES solve(id) ON DELETE CASCADE
             )
@@ -128,6 +146,26 @@ private class CubeTraceDb(context: Context) : SQLiteOpenHelper(
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 14) migratePresetContent(db)
         if (oldVersion < 15) migrateSolveEvidence(db)
+        if (oldVersion < 16) migrateRotationEvidence(db)
+    }
+
+    private fun migrateRotationEvidence(db: SQLiteDatabase) {
+        db.execSQL("ALTER TABLE solve ADD COLUMN orientation_tracked INTEGER NOT NULL DEFAULT 0")
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS rotation_event (
+                solve_id TEXT NOT NULL,
+                ordinal INTEGER NOT NULL,
+                axis TEXT NOT NULL,
+                amount INTEGER NOT NULL,
+                started_at_ms INTEGER NOT NULL,
+                ended_at_ms INTEGER NOT NULL,
+                confidence REAL NOT NULL,
+                PRIMARY KEY(solve_id, ordinal),
+                FOREIGN KEY(solve_id) REFERENCES solve(id) ON DELETE CASCADE
+            )
+            """.trimIndent()
+        )
     }
 
     private fun migrateSolveEvidence(db: SQLiteDatabase) {
@@ -457,6 +495,7 @@ class LocalRepository(context: Context) {
                 record.startSequence?.let { put("start_sequence", it) }
                 record.endSequence?.let { put("end_sequence", it) }
                 put("cross_face", record.crossFace.toString())
+                put("orientation_tracked", if (record.orientationTracked) 1 else 0)
             }
             db.insertOrThrow("solve", null, values)
             record.moves.forEach { move ->
@@ -472,6 +511,18 @@ class LocalRepository(context: Context) {
                     put("time_quality", move.timeQuality.name)
                 }
                 db.insertOrThrow("move_event", null, moveValues)
+            }
+            record.rotationEvents.forEachIndexed { index, event ->
+                val rotationValues = ContentValues().apply {
+                    put("solve_id", id)
+                    put("ordinal", index)
+                    put("axis", event.axis.name)
+                    put("amount", event.amount)
+                    put("started_at_ms", event.startedAtMs)
+                    put("ended_at_ms", event.endedAtMs)
+                    put("confidence", event.confidence)
+                }
+                db.insertOrThrow("rotation_event", null, rotationValues)
             }
             db.setTransactionSuccessful()
         } finally {
@@ -506,15 +557,24 @@ class LocalRepository(context: Context) {
                             startSequence = cursor.getIntOrNull("start_sequence"),
                             endSequence = cursor.getIntOrNull("end_sequence"),
                             crossFace = cursor.getStringOrNull("cross_face")?.firstOrNull() ?: 'D',
-                            moves = emptyList()
+                            orientationTracked = cursor.getIntOrNull("orientation_tracked") == 1,
+                            moves = emptyList(),
+                            rotationEvents = emptyList()
                         )
                     )
                 }
             }
         }
         if (solves.isEmpty()) return solves
-        val movesBySolve = loadMovesForSolves(db, solves.map { it.id })
-        return solves.map { solve -> solve.copy(moves = movesBySolve[solve.id].orEmpty()) }
+        val solveIds = solves.map { it.id }
+        val movesBySolve = loadMovesForSolves(db, solveIds)
+        val rotationsBySolve = loadRotationsForSolves(db, solveIds)
+        return solves.map { solve ->
+            solve.copy(
+                moves = movesBySolve[solve.id].orEmpty(),
+                rotationEvents = rotationsBySolve[solve.id].orEmpty()
+            )
+        }
     }
 
     fun updatePenalty(id: String, penalty: Penalty) {
@@ -635,6 +695,35 @@ class LocalRepository(context: Context) {
                             deviceTimeMs = if (cursor.isNull(6)) null else cursor.getLong(6),
                             receivedAtElapsedMs = if (cursor.isNull(7)) null else cursor.getLong(7),
                             timeQuality = enumValue(cursor.getString(8), MoveTimeQuality.UNKNOWN)
+                        )
+                    )
+                }
+            }
+        }
+        return result
+    }
+
+    private fun loadRotationsForSolves(
+        db: SQLiteDatabase,
+        solveIds: List<String>
+    ): Map<String, List<CubeRotationEvent>> {
+        val result = solveIds.associateWith { mutableListOf<CubeRotationEvent>() }.toMutableMap()
+        solveIds.chunked(400).forEach { chunk ->
+            val placeholders = chunk.joinToString(",") { "?" }
+            db.rawQuery(
+                "SELECT solve_id, ordinal, axis, amount, started_at_ms, ended_at_ms, confidence " +
+                    "FROM rotation_event WHERE solve_id IN ($placeholders) ORDER BY solve_id, ordinal",
+                chunk.toTypedArray()
+            ).use { cursor ->
+                while (cursor.moveToNext()) {
+                    result.getOrPut(cursor.getString(0)) { mutableListOf() }.add(
+                        CubeRotationEvent(
+                            ordinal = cursor.getInt(1),
+                            axis = enumValue(cursor.getString(2), CubeRotationAxis.X),
+                            amount = cursor.getInt(3),
+                            startedAtMs = cursor.getLong(4),
+                            endedAtMs = cursor.getLong(5),
+                            confidence = cursor.getDouble(6)
                         )
                     )
                 }

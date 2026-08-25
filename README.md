@@ -8,7 +8,7 @@
 - 不声明 `INTERNET`；公式、训练、计时、记录和备份全部本地运行。
 - 四个固定一级入口：公式、训练、计时、记录。
 - 119 个稳定 ID 的本地 CFOP 索引（41 F2L / 57 OLL / 21 PLL），统一使用黄顶蓝前；局面由公式逆序生成，九宫格和三维演示共用同一状态。
-- SQLite 本地数据：预设 case、用户掌握度、收藏、笔记、用户公式、Solve 和 MoveEvent。
+- SQLite 本地数据：预设 case、用户掌握度、收藏、笔记、用户公式、Solve、MoveEvent 与转体事件。
 - DataStore 设置：停顿阈值、低动态、色觉辅助、振动和 gyro 跟随偏好。
 - 统计：最佳、平均、ao5、ao12，保留原始毫秒数并单独保存 +2 / DNF。
 - 备份：`.cubetrace.zip`，包含 manifest、JSONL 用户数据、校验和与通知文件。
@@ -31,7 +31,7 @@ gradle assembleDebug
 - V10 AI 连接需要系统蓝牙权限；Android 12+ 使用附近设备权限，Android 8–11 使用系统要求的位置权限。
 - 应用不会后台扫描，不提供任意十六进制写入，不实现改名、重置或固件升级。
 - V10 AI 协议、坐标轴和四元数跟随尚未在用户真实设备上验收，界面显示“待真机验证”。
-- 当前 UI 的三维展示使用本地生成的二维贴面示意；三维渲染桥与完整实时 CubeState/PhysicalOrientation 视图留在后续硬件验证切片。
+- 公式、计时与复盘共用硬件加速的实体三维魔方；公式和复盘支持拖动查看各面，智能计时保留独立的陀螺仪跟随路径。
 - 当前 119 个 case 的 stableId、canonicalState 和公式可由 `core/cube` 重建；公式来源与许可记录在 `docs/provenance/formulas.yml`。
 
 ## 代码结构

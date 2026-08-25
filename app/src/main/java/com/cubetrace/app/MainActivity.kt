@@ -24,6 +24,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -103,6 +104,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
@@ -122,6 +124,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cubetrace.app.core.backup.BackupManager
 import com.cubetrace.app.core.analysis.Ctss1Estimator
+import com.cubetrace.app.core.analysis.CubeRotationDetector
 import com.cubetrace.app.core.analysis.AverageStatus
 import com.cubetrace.app.core.analysis.CoachingInsight
 import com.cubetrace.app.core.analysis.CoachingPriority
@@ -165,6 +168,7 @@ import com.cubetrace.app.core.data.LocalRepository
 import com.cubetrace.app.core.data.SettingsRepository
 import com.cubetrace.app.core.device.DeviceLiveState
 import com.cubetrace.app.core.device.DeviceMoveEvent
+import com.cubetrace.app.core.device.DeviceOrientationEvent
 import com.cubetrace.app.core.device.DeviceStatus
 import com.cubetrace.app.core.device.NearbyV10Device
 import com.cubetrace.app.core.device.Quaternion
@@ -371,6 +375,7 @@ class CubeTraceViewModel(application: Application) : AndroidViewModel(applicatio
     private var casesJob: Job? = null
     private var solvesJob: Job? = null
     private var moveEventJob: Job? = null
+    private var orientationEventJob: Job? = null
     private var timerStartElapsed = 0L
     private var configuredSmartScramble = ""
     private var configuredSmartFrame = SmartCubeFrame.OFFICIAL_WHITE_GREEN
@@ -392,6 +397,11 @@ class CubeTraceViewModel(application: Application) : AndroidViewModel(applicatio
     private var smartSolveEndSequence: Int? = null
     private var smartSolveCrossFace: Char = 'D'
     private var smartSolveStartedAtWallMs: Long = 0L
+    private val smartRotationDetector = CubeRotationDetector()
+    private val smartSolveRotations = mutableListOf<com.cubetrace.app.core.model.CubeRotationEvent>()
+    private var smartOrientationSampleCount = 0
+    private var smartOrientationCalibrationEpoch: Int? = null
+    private var smartOrientationDiscontinuous = false
     private var activeSolveId: String? = null
     private val _currentSolveAnalysis = MutableStateFlow<SolveAnalysis?>(null)
     val currentSolveAnalysis: StateFlow<SolveAnalysis?> = _currentSolveAnalysis.asStateFlow()
@@ -439,6 +449,9 @@ class CubeTraceViewModel(application: Application) : AndroidViewModel(applicatio
         refreshSolves()
         moveEventJob = viewModelScope.launch {
             deviceManager.moveEvents.collect(::onDeviceMoveEvent)
+        }
+        orientationEventJob = viewModelScope.launch {
+            deviceManager.orientationEvents.collect(::onDeviceOrientationEvent)
         }
     }
 
@@ -799,6 +812,11 @@ class CubeTraceViewModel(application: Application) : AndroidViewModel(applicatio
         smartSolveEndSequence = null
         smartSolveCrossFace = 'D'
         smartSolveStartedAtWallMs = 0L
+        smartRotationDetector.reset()
+        smartSolveRotations.clear()
+        smartOrientationSampleCount = 0
+        smartOrientationCalibrationEpoch = null
+        smartOrientationDiscontinuous = false
         activeSolveId = null
     }
 
@@ -836,6 +854,26 @@ class CubeTraceViewModel(application: Application) : AndroidViewModel(applicatio
         }
         state.facelets?.let { lastSmartFacelets = it }
         if (lastSmartSequence == null) lastSmartSequence = state.sequence
+    }
+
+    private fun onDeviceOrientationEvent(event: DeviceOrientationEvent) {
+        val current = _timer.value
+        if (current.phase != TimerPhase.RUNNING || !current.smartAuto) return
+        val existingEpoch = smartOrientationCalibrationEpoch
+        if (existingEpoch == null) {
+            smartOrientationCalibrationEpoch = event.calibrationEpoch
+        } else if (existingEpoch != event.calibrationEpoch) {
+            // Recalibration during a solve breaks one continuous reference.
+            smartOrientationDiscontinuous = true
+            smartOrientationCalibrationEpoch = event.calibrationEpoch
+            smartRotationDetector.reset(event.orientation)
+            return
+        }
+        smartOrientationSampleCount++
+        val elapsedMs = (event.receivedAtElapsedMs - timerStartElapsed).coerceAtLeast(0L)
+        smartRotationDetector.accept(event.orientation, elapsedMs).forEach { detected ->
+            smartSolveRotations += detected.copy(ordinal = smartSolveRotations.size)
+        }
     }
 
     private fun onDeviceMoveEvent(event: DeviceMoveEvent) {
@@ -1342,7 +1380,9 @@ class CubeTraceViewModel(application: Application) : AndroidViewModel(applicatio
         endFacelets = smartSolveEndFacelets,
         startSequence = smartSolveStartSequence,
         endSequence = smartSolveEndSequence,
-        crossFace = smartSolveCrossFace
+        crossFace = smartSolveCrossFace,
+        orientationTracked = smartOrientationSampleCount >= 3 && !smartOrientationDiscontinuous,
+        rotationEvents = smartSolveRotations.toList()
     )
 
     fun openCurrentSolveReview() {
@@ -1405,6 +1445,7 @@ class CubeTraceViewModel(application: Application) : AndroidViewModel(applicatio
         casesJob?.cancel()
         solvesJob?.cancel()
         moveEventJob?.cancel()
+        orientationEventJob?.cancel()
         solveReviewJob?.cancel()
         deviceManager.close()
         repository.close()
@@ -1485,7 +1526,12 @@ private fun CubeTraceApp(viewModel: CubeTraceViewModel) {
                     CubeTraceNavigation(section, viewModel::selectSection)
                 }
             ) { innerPadding ->
-                Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
+                val contentMaxWidth = if (section == AppSection.FORMULA || section == AppSection.RECORDS) 1200.dp else 900.dp
+                Box(
+                    modifier = Modifier.fillMaxSize().padding(innerPadding),
+                    contentAlignment = Alignment.TopCenter
+                ) {
+                    Box(modifier = Modifier.fillMaxHeight().widthIn(max = contentMaxWidth).fillMaxWidth()) {
                     when (section) {
                         AppSection.FORMULA -> FormulaScreen(
                             cases = cases,
@@ -1635,6 +1681,7 @@ private fun CubeTraceApp(viewModel: CubeTraceViewModel) {
                             snackbar = ""
                         }
                     }
+                    }
                 }
             }
         }
@@ -1692,7 +1739,7 @@ private fun CubeTraceTopBar(
             .clipToBounds()
     ) {
         TopAppBar(
-            modifier = Modifier.fillMaxWidth().height(64.dp).alpha(expandedAlpha),
+            modifier = Modifier.widthIn(max = 1200.dp).fillMaxWidth().height(64.dp).alpha(expandedAlpha).align(Alignment.TopCenter),
             navigationIcon = { CubeTraceBrandMark(modifier = Modifier.padding(start = 16.dp)) },
             title = {
                 Column {
@@ -1709,7 +1756,7 @@ private fun CubeTraceTopBar(
             colors = TopAppBarDefaults.topAppBarColors(containerColor = CubeTraceColors.mist, scrolledContainerColor = CubeTraceColors.mist)
         )
         Row(
-            modifier = Modifier.fillMaxWidth().height(48.dp).alpha(compactAlpha).padding(horizontal = 16.dp),
+            modifier = Modifier.widthIn(max = 1200.dp).fillMaxWidth().height(48.dp).alpha(compactAlpha).padding(horizontal = 16.dp).align(Alignment.TopCenter),
             verticalAlignment = Alignment.CenterVertically
         ) {
             CubeTraceBrandMark(modifier = Modifier.size(28.dp))
@@ -1766,7 +1813,15 @@ private fun DeviceStatusChip(status: DeviceStatus, onClick: () -> Unit) {
 
 @Composable
 private fun CubeTraceNavigation(section: AppSection, onSection: (AppSection) -> Unit) {
-    NavigationBar(containerColor = CubeTraceColors.paper, tonalElevation = 0.dp, modifier = Modifier.border(1.dp, CubeTraceColors.line)) {
+    Box(
+        modifier = Modifier.fillMaxWidth().background(CubeTraceColors.paper).border(1.dp, CubeTraceColors.line),
+        contentAlignment = Alignment.Center
+    ) {
+        NavigationBar(
+            containerColor = CubeTraceColors.paper,
+            tonalElevation = 0.dp,
+            modifier = Modifier.widthIn(max = 720.dp).fillMaxWidth()
+        ) {
         AppSection.entries.forEach { item ->
             NavigationBarItem(
                 selected = item == section,
@@ -1781,6 +1836,7 @@ private fun CubeTraceNavigation(section: AppSection, onSection: (AppSection) -> 
                     unselectedTextColor = CubeTraceColors.muted
                 )
             )
+        }
         }
     }
 }
@@ -1838,11 +1894,17 @@ private fun FormulaScreen(
     }
     LaunchedEffect(headerCompact) { onHeaderCompact(headerCompact) }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val columnCount = when {
+            maxWidth >= 1040.dp -> 4
+            maxWidth >= 720.dp -> 3
+            else -> 2
+        }
+        val gridPadding = if (maxWidth >= 720.dp) 24.dp else 18.dp
         LazyVerticalGrid(
-            columns = GridCells.Fixed(2),
+            columns = GridCells.Fixed(columnCount),
             state = gridState,
-            modifier = Modifier.fillMaxSize().padding(horizontal = 18.dp),
+            modifier = Modifier.fillMaxSize().padding(horizontal = gridPadding),
             verticalArrangement = Arrangement.spacedBy(10.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             contentPadding = PaddingValues(top = 2.dp, bottom = 24.dp)
@@ -3540,6 +3602,7 @@ private fun CaseDetailDialog(
     var demoOpen by remember(item.stableId, item.variant.id) { mutableStateOf(false) }
     var demoPlaying by remember(item.stableId, item.variant.id) { mutableStateOf(false) }
     var demoSpeed by remember(item.stableId) { mutableStateOf(1f) }
+    var demoViewResetKey by remember(item.stableId) { mutableStateOf(0) }
     var demoFrame by remember(item.stableId, item.variant.id, item.canonicalState) {
         mutableStateOf(DemoFrame(facelets = item.canonicalState, step = 0))
     }
@@ -3628,8 +3691,11 @@ private fun CaseDetailDialog(
                             reducedMotion = reducedMotion,
                             focusF2L = item.stage == Stage.F2L,
                             focusFacelets = if (item.stage == Stage.F2L) item.canonicalState else null,
-                            animationSpeed = demoSpeed
+                            animationSpeed = demoSpeed,
+                            interactiveView = true,
+                            resetViewKey = demoViewResetKey
                         )
+                        ViewOrbitControls { demoViewResetKey++ }
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -3917,6 +3983,9 @@ private fun SolveReviewDialog(
                 }
             }
             Spacer(Modifier.height(18.dp))
+            SectionRule("转体识别")
+            RotationSummary(solve)
+            Spacer(Modifier.height(18.dp))
             SectionRule("全程三维还原")
             SolveReplay3DModule(
                 solveId = solve.id,
@@ -4016,6 +4085,81 @@ private fun SolveReviewDialog(
 private val builtInCaseById by lazy { PresetCatalog.all().associateBy { it.stableId } }
 
 @Composable
+private fun ViewOrbitControls(onReset: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().height(38.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text("拖动魔方查看各面", fontSize = 11.sp, color = CubeTraceColors.muted)
+        TextButton(onClick = onReset) { Text("置正视角", fontSize = 11.sp) }
+    }
+}
+
+@Composable
+private fun RotationSummary(solve: SolveRecord) {
+    val events = solve.rotationEvents
+    Card(
+        colors = CardDefaults.cardColors(containerColor = CubeTraceColors.paper),
+        shape = RoundedCornerShape(10.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, CubeTraceColors.line),
+        modifier = Modifier.fillMaxWidth().padding(top = 9.dp)
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 13.dp, vertical = 11.dp)) {
+            if (!solve.orientationTracked) {
+                Text("未记录", fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "这次成绩没有完整的陀螺仪姿态证据；旧成绩和手动计时不会被显示为 0 次。",
+                    fontSize = 12.sp,
+                    color = CubeTraceColors.muted,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+                return@Column
+            }
+            val byAxis = events.groupingBy { it.axis }.eachCount()
+            Text(
+                "${events.size} 次转体",
+                fontFamily = FontFamily.Monospace,
+                fontSize = 24.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = if (events.isEmpty()) CubeTraceColors.graphite else CubeTraceColors.track
+            )
+            Text(
+                "x ${byAxis[com.cubetrace.app.core.model.CubeRotationAxis.X] ?: 0} · " +
+                    "y ${byAxis[com.cubetrace.app.core.model.CubeRotationAxis.Y] ?: 0} · " +
+                    "z ${byAxis[com.cubetrace.app.core.model.CubeRotationAxis.Z] ?: 0}",
+                fontFamily = FontFamily.Monospace,
+                fontSize = 13.sp,
+                color = CubeTraceColors.graphite,
+                modifier = Modifier.padding(top = 5.dp)
+            )
+            if (events.isNotEmpty()) {
+                Text(
+                    events.joinToString("  ") { event ->
+                        val suffix = when (event.amount) {
+                            -1 -> "'"
+                            2 -> "2"
+                            else -> ""
+                        }
+                        "${event.axis.name.lowercase()}$suffix @ ${formatDuration(event.endedAtMs)}"
+                    },
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 11.sp,
+                    color = CubeTraceColors.muted,
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 7.dp)
+                )
+            }
+            Text(
+                "按稳定的 90° / 180° 整体姿态变化估算；普通层转与短暂手抖不会计入。",
+                fontSize = 11.sp,
+                color = CubeTraceColors.muted,
+                modifier = Modifier.padding(top = 7.dp)
+            )
+        }
+    }
+}
+
+@Composable
 private fun SolveReplay3DModule(
     solveId: String,
     analysis: SolveAnalysis?,
@@ -4072,6 +4216,7 @@ private fun SolveReplay3DPlayer(
 
     var playing by remember(solveId) { mutableStateOf(false) }
     var speed by remember(solveId) { mutableStateOf(1f) }
+    var viewResetKey by remember(solveId) { mutableStateOf(0) }
     var frame by remember(solveId, states.first(), states.size) {
         mutableStateOf(DemoFrame(facelets = states.first(), step = 0))
     }
@@ -4145,8 +4290,11 @@ private fun SolveReplay3DPlayer(
                 animationKey = frame.step,
                 reducedMotion = reducedMotion,
                 animationSpeed = speed,
-                cubeFrame = SmartCubeFrame.PERSONAL_YELLOW_BLUE
+                cubeFrame = SmartCubeFrame.PERSONAL_YELLOW_BLUE,
+                interactiveView = true,
+                resetViewKey = viewResetKey
             )
+            ViewOrbitControls { viewResetKey++ }
             Slider(
                 value = frame.step.toFloat(),
                 onValueChange = { value ->
@@ -4330,6 +4478,7 @@ private fun ReviewFormulaModule(
 ) {
     var playing by remember(cubeCase.stableId, notation) { mutableStateOf(false) }
     var speed by remember(cubeCase.stableId) { mutableStateOf(1f) }
+    var viewResetKey by remember(cubeCase.stableId, notation) { mutableStateOf(0) }
     var frame by remember(cubeCase.stableId, notation, cubeCase.canonicalState) {
         mutableStateOf(DemoFrame(facelets = cubeCase.canonicalState, step = 0))
     }
@@ -4422,10 +4571,13 @@ private fun ReviewFormulaModule(
                         reducedMotion = reducedMotion,
                         focusF2L = cubeCase.stage == Stage.F2L,
                         focusFacelets = if (cubeCase.stage == Stage.F2L) cubeCase.canonicalState else null,
-                        animationSpeed = speed
+                        animationSpeed = speed,
+                        interactiveView = true,
+                        resetViewKey = viewResetKey
                     )
                 }
             }
+            ViewOrbitControls { viewResetKey++ }
             MoveTokenRow(notation, wrap = true)
             Row(
                 modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
@@ -4839,8 +4991,23 @@ private fun StatusBanner(status: DeviceStatus, liveState: DeviceLiveState) {
 
 @Composable
 private fun DialogSurface(onDismiss: () -> Unit, content: @Composable () -> Unit) {
-    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
-        Surface(modifier = Modifier.fillMaxWidth().fillMaxSize(0.94f), shape = RoundedCornerShape(16.dp), color = CubeTraceColors.mist, tonalElevation = 3.dp, content = content)
+    val tablet = LocalConfiguration.current.screenWidthDp >= 720
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = !tablet)
+    ) {
+        val surfaceModifier = if (tablet) {
+            Modifier.fillMaxHeight(0.92f).widthIn(max = 1100.dp).fillMaxWidth(0.9f)
+        } else {
+            Modifier.fillMaxWidth().fillMaxSize(0.94f)
+        }
+        Surface(
+            modifier = surfaceModifier,
+            shape = RoundedCornerShape(16.dp),
+            color = CubeTraceColors.mist,
+            tonalElevation = 3.dp,
+            content = content
+        )
     }
 }
 

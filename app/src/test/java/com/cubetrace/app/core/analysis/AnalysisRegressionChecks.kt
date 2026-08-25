@@ -15,6 +15,11 @@ import com.cubetrace.app.core.model.RecordedMove
 import com.cubetrace.app.core.model.SolveRecord
 import com.cubetrace.app.core.model.SolveSource
 import com.cubetrace.app.core.model.Stage
+import com.cubetrace.app.core.device.Quaternion
+import com.cubetrace.app.core.model.CubeRotationAxis
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.sin
 
 /**
  * Dependency-free regression checks for the replay contract. The Android
@@ -35,6 +40,7 @@ object AnalysisRegressionChecks {
         nonMonotonicTime()
         explicitGap()
         firstEvidenceCanCompleteOnTheFinalState()
+        cancelledReplayDoesNotInventCfopPhases()
         burstKeepsSameTimestamp()
         incompleteSolveIsNotCtssInput()
         sequenceWrapAround()
@@ -69,7 +75,10 @@ object AnalysisRegressionChecks {
         rollingStatsExposeCurrentAndBestAverages()
         pbThresholdBoundaryIsExact()
         phaseFormulaUsesReplayBoundaries()
-        println("AnalysisRegressionChecks: 44 passed")
+        stableWholeCubeTurnIsRecognized()
+        jitterAndUnsettledMotionAreIgnored()
+        halfTurnAndQuaternionSignAreStable()
+        println("AnalysisRegressionChecks: 48 passed")
     }
 
     private fun oneMoveSolve(
@@ -144,10 +153,35 @@ object AnalysisRegressionChecks {
 
     private fun firstEvidenceCanCompleteOnTheFinalState() {
         val analysis = analyzeSolve(oneMoveSolve(), 250)!!
-        check(analysis.status == AnalysisStatus.COMPLETE) { "status=${analysis.status}, reason=${analysis.reasonCode}" }
+        check(analysis.status == AnalysisStatus.COMPLETE)
         check(analysis.phases.all { it.availability != PhaseAvailability.UNAVAILABLE })
     }
-
+    private fun cancelledReplayDoesNotInventCfopPhases() {
+        val solved = CubeState.solved().asFacelets()
+        val solve = SolveRecord(
+            id = "cancelled-replay",
+            sessionId = "test",
+            sessionName = "test",
+            scramble = "R R'",
+            durationMs = 200L,
+            startedAt = 1L,
+            source = SolveSource.V10_AI,
+            completeness = Completeness.COMPLETE,
+            moves = listOf(
+                RecordedMove(0, "R", 100L, sequence = 1),
+                RecordedMove(1, "R'", 200L, sequence = 2)
+            ),
+            startFacelets = solved,
+            endFacelets = solved,
+            startSequence = 0,
+            endSequence = 2
+        )
+        val analysis = analyzeSolve(solve, 250)!!
+        check(analysis.status == AnalysisStatus.INCOMPLETE)
+        check(analysis.reasonCode == AnalysisReasonCode.AMBIGUOUS_FINAL_ONLY)
+        check(analysis.phases.all { it.availability == PhaseAvailability.UNAVAILABLE })
+        check(analysis.phases.none { it.summary.durationMs == solve.durationMs })
+    }
     private fun burstKeepsSameTimestamp() {
         val start = CubeState.solved().apply(normalizedMoves("R2")).asFacelets()
         val solve = SolveRecord(
@@ -431,7 +465,7 @@ object AnalysisRegressionChecks {
         check(analysis.reasonCode == null)
         check(analysis.replay?.valid == true)
         check(analysis.phases.all { it.availability != PhaseAvailability.UNAVAILABLE })
-        check(analysis.phases.first().endOrdinalInclusive == 6)
+        check(analysis.phases.first().endOrdinalInclusive == 6) { analysis.phases.joinToString { it.endOrdinalInclusive.toString() } }
         check(analysis.phases.sumOf { it.summary.durationMs } == solve.durationMs)
         check(analysis.phases.count { it.summary.durationMs > 0L } >= 3) {
             "phase durations=${analysis.phases.map { it.summary.durationMs }}"
@@ -817,6 +851,51 @@ object AnalysisRegressionChecks {
         )
         check(executedMovesForPhase(phase, moves).map { it.code } == listOf("R'", "U'", "F"))
         check(executedMovesForPhase(phase.copy(startOrdinalExclusive = 4, endOrdinalInclusive = 4), moves).isEmpty())
+    }
+
+    private fun stableWholeCubeTurnIsRecognized() {
+        val detector = CubeRotationDetector(stableHoldMs = 80L)
+        detector.reset(Quaternion.identity())
+        val x = axisRotation(CubeRotationAxis.X, 1)
+        check(detector.accept(x, 10L).isEmpty())
+        val events = detector.accept(x, 100L)
+        check(events.size == 1)
+        check(events.single().axis == CubeRotationAxis.X)
+        check(events.single().amount == 1)
+    }
+
+    private fun jitterAndUnsettledMotionAreIgnored() {
+        val detector = CubeRotationDetector(stableHoldMs = 80L)
+        detector.reset(Quaternion.identity())
+        val smallJitter = Quaternion.normalized(sin(Math.toRadians(15.0) / 2.0), 0.0, 0.0, cos(Math.toRadians(15.0) / 2.0))
+        check(detector.accept(smallJitter, 10L).isEmpty())
+        check(detector.accept(smallJitter, 150L).isEmpty())
+        val boundary = Quaternion.normalized(sin(Math.toRadians(50.0) / 2.0), 0.0, 0.0, cos(Math.toRadians(50.0) / 2.0))
+        check(detector.accept(boundary, 200L).isEmpty())
+        check(detector.accept(boundary, 400L).isEmpty())
+    }
+
+    private fun halfTurnAndQuaternionSignAreStable() {
+        val detector = CubeRotationDetector(stableHoldMs = 80L)
+        detector.reset(Quaternion.identity())
+        val y2 = axisRotation(CubeRotationAxis.Y, 2)
+        check(detector.accept(y2.negated(), 10L).isEmpty())
+        val events = detector.accept(y2, 100L)
+        check(events.size == 1)
+        check(events.single().axis == CubeRotationAxis.Y)
+        check(events.single().amount == 2)
+        check(detector.accept(y2.negated(), 220L).isEmpty())
+    }
+
+    private fun axisRotation(axis: CubeRotationAxis, amount: Int): Quaternion {
+        val radians = amount * PI / 2.0
+        val s = sin(radians / 2.0)
+        val c = cos(radians / 2.0)
+        return when (axis) {
+            CubeRotationAxis.X -> Quaternion.normalized(s, 0.0, 0.0, c)
+            CubeRotationAxis.Y -> Quaternion.normalized(0.0, s, 0.0, c)
+            CubeRotationAxis.Z -> Quaternion.normalized(0.0, 0.0, s, c)
+        }
     }
 
     private fun interval(low: Double, high: Double) = IntervalForecast(

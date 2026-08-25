@@ -96,6 +96,18 @@ data class RecordedMove(
     val timeQuality: MoveTimeQuality = MoveTimeQuality.UNKNOWN
 )
 
+enum class CubeRotationAxis { X, Y, Z }
+
+data class CubeRotationEvent(
+    val ordinal: Int,
+    val axis: CubeRotationAxis,
+    /** Quarter-turn amount: 1, -1 or 2. */
+    val amount: Int,
+    val startedAtMs: Long,
+    val endedAtMs: Long,
+    val confidence: Double
+)
+
 data class SolveRecord(
     val id: String,
     val sessionId: String,
@@ -115,7 +127,10 @@ data class SolveRecord(
     val startSequence: Int? = null,
     val endSequence: Int? = null,
     /** Cross face in the canonical app frame; white is D by default. */
-    val crossFace: Char = 'D'
+    val crossFace: Char = 'D',
+    /** True when gyro samples covered this solve, even if no rotation was detected. */
+    val orientationTracked: Boolean = false,
+    val rotationEvents: List<CubeRotationEvent> = emptyList()
 )
 
 data class AppSettings(

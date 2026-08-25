@@ -6,7 +6,9 @@ import android.graphics.Canvas as AndroidCanvas
 import android.graphics.Paint
 import android.graphics.Path as AndroidPath
 import android.graphics.RectF
+import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import androidx.compose.foundation.Canvas
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -62,7 +64,9 @@ fun Cube3DView(
     sceneOrientation: Quaternion? = null,
     sceneOrientationFlow: StateFlow<Quaternion?>? = null,
     modelScale: Float = 1f,
-    cubeFrame: SmartCubeFrame = SmartCubeFrame.PERSONAL_YELLOW_BLUE
+    cubeFrame: SmartCubeFrame = SmartCubeFrame.PERSONAL_YELLOW_BLUE,
+    interactiveView: Boolean = false,
+    resetViewKey: Int = 0
 ) {
     val focusSource = focusFacelets ?: facelets
     val focusPlan = remember(focusF2L, focusSource) {
@@ -90,7 +94,8 @@ fun Cube3DView(
             Cube3DAndroidRenderer(context).also { rendererRef[0] = it }
         },
         modifier = modifier.clipToBounds().semantics {
-            contentDescription = "3D cube, ${cubeFrame.label}${animateMove?.let { ", move $it" } ?: ""}"
+            contentDescription = "3D cube, ${cubeFrame.label}${animateMove?.let { ", move $it" } ?: ""}" +
+                if (interactiveView) ", 可拖动查看各面" else ""
         },
         update = { renderer ->
             rendererRef[0] = renderer
@@ -106,7 +111,9 @@ fun Cube3DView(
                 sceneOrientation = sceneOrientationFlow?.value ?: sceneOrientation,
                 modelScale = modelScale,
                 animationSpeed = animationSpeed,
-                cubeFrame = cubeFrame
+                cubeFrame = cubeFrame,
+                interactiveView = interactiveView,
+                resetViewKey = resetViewKey
             )
         }
     )
@@ -171,6 +178,16 @@ private class Cube3DAndroidRenderer(context: Context) : View(context) {
     private var targetFocusModel: F2LFocus? = null
     private var modelScale = 1f
     private var cubeFrame = SmartCubeFrame.PERSONAL_YELLOW_BLUE
+    private var interactiveView = false
+    private var resetViewKey = 0
+    private var manualYaw = 0.0
+    private var manualPitch = 0.0
+    private var touchDownX = 0f
+    private var touchDownY = 0f
+    private var lastTouchX = 0f
+    private var lastTouchY = 0f
+    private var draggingView = false
+    private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
 
     init {
         // This view is deliberately opaque only where it draws; the parent
@@ -178,6 +195,7 @@ private class Cube3DAndroidRenderer(context: Context) : View(context) {
         // on the GPU instead of rebuilding Compose paths on the UI tree.
         setLayerType(View.LAYER_TYPE_HARDWARE, null)
         setWillNotDraw(false)
+        isClickable = true
     }
 
     fun configure(
@@ -192,7 +210,9 @@ private class Cube3DAndroidRenderer(context: Context) : View(context) {
         sceneOrientation: Quaternion?,
         modelScale: Float,
         animationSpeed: Float,
-        cubeFrame: SmartCubeFrame
+        cubeFrame: SmartCubeFrame,
+        interactiveView: Boolean,
+        resetViewKey: Int
     ) {
         val nextFacelets = validFacelets(facelets, targetFacelets)
         val nextIdentity = AnimationIdentity(animationKey, animateMove)
@@ -214,6 +234,12 @@ private class Cube3DAndroidRenderer(context: Context) : View(context) {
         this.targetFocusModel = targetFocusModel
         this.modelScale = modelScale
         this.cubeFrame = cubeFrame
+        this.interactiveView = interactiveView
+        if (this.resetViewKey != resetViewKey) {
+            this.resetViewKey = resetViewKey
+            manualYaw = 0.0
+            manualPitch = 0.0
+        }
         updateTargetOrientation(sceneOrientation)
         postInvalidateOnAnimation()
     }
@@ -229,11 +255,58 @@ private class Cube3DAndroidRenderer(context: Context) : View(context) {
         postInvalidateOnAnimation()
     }
 
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (!interactiveView) return false
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                touchDownX = event.x
+                touchDownY = event.y
+                lastTouchX = event.x
+                lastTouchY = event.y
+                draggingView = false
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val totalX = event.x - touchDownX
+                val totalY = event.y - touchDownY
+                if (!draggingView && totalX * totalX + totalY * totalY >= touchSlop * touchSlop) {
+                    draggingView = true
+                    parent?.requestDisallowInterceptTouchEvent(true)
+                }
+                if (draggingView) {
+                    manualYaw += (event.x - lastTouchX) * MANUAL_ORBIT_RADIANS_PER_PIXEL
+                    manualPitch += (event.y - lastTouchY) * MANUAL_ORBIT_RADIANS_PER_PIXEL
+                    lastTouchX = event.x
+                    lastTouchY = event.y
+                    postInvalidateOnAnimation()
+                }
+                return true
+            }
+            MotionEvent.ACTION_UP -> {
+                parent?.requestDisallowInterceptTouchEvent(false)
+                if (!draggingView) performClick()
+                draggingView = false
+                return true
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                parent?.requestDisallowInterceptTouchEvent(false)
+                draggingView = false
+                return true
+            }
+        }
+        return super.onTouchEvent(event)
+    }
+
+    override fun performClick(): Boolean {
+        super.performClick()
+        return true
+    }
+
     override fun onDraw(canvas: AndroidCanvas) {
         super.onDraw(canvas)
         val now = System.nanoTime()
         val progress = sampleAnimation(now)
-        val orientation = sampleOrientation(now)
+        val orientation = composeViewOrientation(sampleOrientation(now))
         val facelets = if (activeTurn != null && progress < 1f) fromFacelets else targetFacelets
         val focus = if (activeTurn != null && progress < 1f) {
             focusModel
@@ -284,6 +357,16 @@ private class Cube3DAndroidRenderer(context: Context) : View(context) {
             target
         }
         return renderedOrientation
+    }
+
+    private fun composeViewOrientation(physical: Quaternion?): Quaternion? {
+        if (manualYaw == 0.0 && manualPitch == 0.0) return physical
+        val yawHalf = manualYaw / 2.0
+        val pitchHalf = manualPitch / 2.0
+        val yaw = Quaternion.normalized(0.0, sin(yawHalf), 0.0, cos(yawHalf))
+        val pitch = Quaternion.normalized(sin(pitchHalf), 0.0, 0.0, cos(pitchHalf))
+        val orbit = yaw.multiplied(pitch)
+        return physical?.let { orbit.multiplied(it) } ?: orbit
     }
 
     private fun drawCube(
@@ -545,6 +628,7 @@ private class Cube3DAndroidRenderer(context: Context) : View(context) {
         const val COLOR_STICKER_EDGE = 0xBF14232D.toInt()
         const val COLOR_SHELL_EDGE = 0x5517232C.toInt()
         const val ORIENTATION_DEADBAND = 0.018
+        const val MANUAL_ORBIT_RADIANS_PER_PIXEL = 0.007
     }
 }
 

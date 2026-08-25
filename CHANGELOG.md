@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.1 · corrected CFOP candidate evidence
+
+- Ranks all six possible cross faces by the amount and diversity of non-final C/F1/F2/F3/F4/OLL evidence, so a coincidental late-layer pattern on an unrelated face cannot collapse the solve into one Cross stage.
+- Preserves first-observed CFOP milestones and legitimate OLL/PLL skips, while refusing to fabricate seven proven phases when F1 through OLL exist only at the final solved state.
+- Uses the explicit full-F2L boundary for F4 and adds deterministic regression coverage for degenerate replay evidence.
+
+## 0.3.0 · rotation review, interactive 3D and tablet workspace
+
+- Records stable whole-cube rotations from a dedicated gyro event stream and shows total/x/y/z estimates with timestamps in deep review; old or non-gyro solves remain clearly marked as not recorded.
+- Reuses the timer page's hardware-accelerated solid cubie renderer for formula, coaching and full-solve replay, with touch orbit and a visible reset-view control.
+- Adds a 720 dp tablet breakpoint, centered workbench widths, three/four-column formula grids, constrained navigation and wide dialogs while preserving the existing phone layout.
+
 ## 0.2.7 · personal solve replay orientation
 
 - Shows full-solve deep-review playback in the personal yellow-top, blue-front CFOP frame instead of the official white-top, green-front scramble frame.
