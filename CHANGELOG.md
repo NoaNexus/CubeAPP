@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0 · practice setups, recorded timing and woodland workbench
+
+- Adds verified practice scrambles to formula details and recognition practice, with copying and a direct practice entry. All 119 catalog setups reproduce their exact displayed state, independent of the selected algorithm variant.
+- Adds recorded-time 3D playback with pauses, 0.5× / 1× / 2× speed, live speed changes, pause/resume and time seeking. Equal-timestamp moves stay simultaneous; missing or estimated time is labelled. Uniform observation remains available.
+- Gives the four primary pages and supporting cards/buttons a cohesive woodland palette, tactile controls and original miniature-cube illustrations, combining rounded strategy-game forms with a softer diorama treatment.
+- Distinguishes missing move evidence from timed pauses in the move rail; resets the recognition practice cursor when entering a case from the formula library.
+- Adds 9 timeline regression checks and exact setup checks for all 119 cases; `scripts/check-core.ps1` runs these alongside the 48 existing analysis checks.
+- Handles revoked Bluetooth permissions defensively, fixes Android 8 navigation-bar theme compatibility, and displays the actual build version in About. Adds a checksum-pinned Gradle Wrapper and an external-credentials release signing script.
+
 ## 0.3.1 · corrected CFOP candidate evidence
 
 - Ranks all six possible cross faces by the amount and diversity of non-final C/F1/F2/F3/F4/OLL evidence, so a coincidental late-layer pattern on an unrelated face cannot collapse the solve into one Cross stage.

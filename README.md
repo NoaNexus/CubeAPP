@@ -7,7 +7,9 @@
 - Kotlin + Jetpack Compose 原生 Android 工程，`minSdk 26`。
 - 不声明 `INTERNET`；公式、训练、计时、记录和备份全部本地运行。
 - 四个固定一级入口：公式、训练、计时、记录。
-- 119 个稳定 ID 的本地 CFOP 索引（41 F2L / 57 OLL / 21 PLL），统一使用黄顶蓝前；局面由公式逆序生成，九宫格和三维演示共用同一状态。
+- 公式详情与识别训练提供可复制的对应练习打乱；每条打乱均校验与案例图局面一致。
+- 三维复盘支持真实节奏和匀速观察，可按动作时间轴保留停顿、暂停续播、拖动定位及 0.5× / 1× / 2× 倍速。
+- 119 个稳定 ID 的本地 CFOP 索引（41 F2L / 57 OLL / 21 PLL），统一使用黄顶蓝前；F2L/OLL 使用目录显式 setup，PLL 由公式与参考帧生成，九宫格和三维演示共用同一状态。
 - SQLite 本地数据：预设 case、用户掌握度、收藏、笔记、用户公式、Solve、MoveEvent 与转体事件。
 - DataStore 设置：停顿阈值、低动态、色觉辅助、振动和 gyro 跟随偏好。
 - 统计：最佳、平均、ao5、ao12，保留原始毫秒数并单独保存 +2 / DNF。
@@ -18,11 +20,13 @@
 
 用 Android Studio 打开本目录，等待 Gradle 同步后选择 `app` 运行。工程使用 Java 17、Kotlin 2.0.21、Android Gradle Plugin 8.7.2，首次构建需要 Android SDK 35。
 
-也可以在已安装 Gradle 的环境执行：
+也可以使用已固定 Gradle 9.4.1 和分发包校验值的 Wrapper（Windows 使用 `gradlew.bat`）：
 
 ```text
-gradle assembleDebug
+./gradlew assembleDebug
 ```
+
+不依赖 Android 设备的核心回归可通过 `scripts/check-core.ps1 -JavaExe <java.exe绝对路径> -KotlinLib <Kotlin编译器与依赖jar目录>` 运行。`KotlinLib` 可使用 Gradle 8.9 分发包的 `lib` 目录；覆盖分析、回放时间轴和全部案例打乱。
 
 当前工作区没有提交签名密钥、`local.properties` 或构建产物。发布前请按 `docs/spec/07-开源合规与离线分发.md` 准备 release keystore、源码包和许可证附件。
 
@@ -47,4 +51,4 @@ app/src/main/java/com/cubetrace/app/
    └─ model/        领域实体、统计与展示口径
 ```
 
-下一步建议按文档路线推进：先用真实 V10 AI 完成 G0 协议证据，再替换 reviewed CFOP 内容包，之后接入受限本地三维渲染与完整事件复盘。
+当前验收范围与后续硬件验证见 `docs/implementation-status.md`；0.4.0 发布记录见 `docs/releases/0.4.0.md`。

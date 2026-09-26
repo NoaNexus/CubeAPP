@@ -168,7 +168,7 @@ class V10DeviceManager(private val context: Context) {
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             val device = result.device
-            val name = runCatching { device.name }.getOrNull()?.takeIf { it.isNotBlank() } ?: "未命名设备"
+            val name = device.safeName("未命名设备")
             val normalizedName = name.uppercase()
             val address = V10Protocol.normalizeMac(device.address).orEmpty()
             val advertisesTargetService = result.scanRecord?.serviceUuids?.any {
@@ -215,7 +215,12 @@ class V10DeviceManager(private val context: Context) {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             if (newState == BluetoothGatt.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) {
                 _status.value = DeviceStatus.Connecting(currentDevice?.safeName() ?: "V10 AI")
-                if (hasConnectPermission()) gatt.discoverServices()
+                try {
+                    if (hasConnectPermission()) gatt.discoverServices()
+                    else failConnection("需要附近设备权限才能读取魔方")
+                } catch (_: SecurityException) {
+                    failConnection("附近设备权限已撤销，请重新授权")
+                }
             } else if (newState == BluetoothGatt.STATE_DISCONNECTED) {
                 operations.clear()
                 operationInFlight = false
@@ -227,11 +232,11 @@ class V10DeviceManager(private val context: Context) {
                     // a stale handle.
                     closeGatt()
                 } else {
-                    gatt.close()
+                    gatt.closeSafely()
                 }
                 _status.value = DeviceStatus.Error("魔方已断开；公式和手动计时仍可用")
             } else if (status != BluetoothGatt.GATT_SUCCESS) {
-                if (currentGatt === gatt) failConnection("无法连接魔方，请确认它没有连接到其他 APP") else gatt.close()
+                if (currentGatt === gatt) failConnection("无法连接魔方，请确认它没有连接到其他 APP") else gatt.closeSafely()
             }
         }
 
@@ -257,7 +262,15 @@ class V10DeviceManager(private val context: Context) {
             operationInFlight = false
             awaitingDeviceInfo = true
             followUpRequestsQueued = false
-            gatt.setCharacteristicNotification(notify, true)
+            try {
+                if (!gatt.setCharacteristicNotification(notify, true)) {
+                    failConnection("无法开启魔方动作通知，请重新连接")
+                    return
+                }
+            } catch (_: SecurityException) {
+                failConnection("附近设备权限已撤销，请重新授权")
+                return
+            }
             val descriptor = notify.getDescriptor(UUID.fromString(CLIENT_CONFIG_UUID))
             if (descriptor != null) {
                 descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
@@ -310,12 +323,20 @@ class V10DeviceManager(private val context: Context) {
             return
         }
         _devices.value = emptyList()
-        scanner?.startScan(scanCallback)
-        _status.value = DeviceStatus.Scanning
+        try {
+            scanner?.startScan(scanCallback)
+            _status.value = DeviceStatus.Scanning
+        } catch (_: SecurityException) {
+            _status.value = DeviceStatus.PermissionRequired
+        }
     }
 
     fun stopScan() {
-        if (hasScanPermission()) scanner?.stopScan(scanCallback)
+        try {
+            if (hasScanPermission()) scanner?.stopScan(scanCallback)
+        } catch (_: SecurityException) {
+            _status.value = DeviceStatus.PermissionRequired
+        }
         if (_status.value is DeviceStatus.Scanning) {
             if (currentGatt != null && !awaitingDeviceInfo) markReadyKeepingMetadata()
             else _status.value = DeviceStatus.Idle
@@ -350,7 +371,12 @@ class V10DeviceManager(private val context: Context) {
             return
         }
         _status.value = DeviceStatus.Connecting(item.name)
-        currentGatt = item.device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        try {
+            currentGatt = item.device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        } catch (_: SecurityException) {
+            closeGatt()
+            _status.value = DeviceStatus.PermissionRequired
+        }
     }
 
     fun request(command: V10Protocol.SafeCommand) {
@@ -383,7 +409,7 @@ class V10DeviceManager(private val context: Context) {
         if (!hasConnectPermission()) return
         val operation = operations.removeFirst()
         operationInFlight = true
-        val started = when (operation.kind) {
+        val started = try { when (operation.kind) {
             GattOperation.Kind.DESCRIPTOR -> operation.descriptor?.let {
                 gatt.writeDescriptor(it)
             } ?: false
@@ -401,6 +427,9 @@ class V10DeviceManager(private val context: Context) {
                 characteristic.value = cipher.encrypt(plain)
                 gatt.writeCharacteristic(characteristic)
             }
+        } } catch (_: SecurityException) {
+            failConnection("附近设备权限已撤销，已停止发送指令")
+            return
         }
         if (!started) completeOperation(false)
     }
@@ -876,7 +905,7 @@ class V10DeviceManager(private val context: Context) {
         operations.clear()
         operationInFlight = false
         resetLiveState()
-        if (gatt != null && hasConnectPermission()) gatt.close()
+        gatt?.closeSafely()
     }
 
     private fun failConnection(message: String) {
@@ -893,7 +922,14 @@ class V10DeviceManager(private val context: Context) {
     private fun hasConnectPermission(): Boolean = Build.VERSION.SDK_INT < 31 ||
         ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
 
-    private fun BluetoothDevice.safeName(): String = runCatching { name }.getOrNull()?.takeIf { it.isNotBlank() } ?: "V10 AI"
+    private fun BluetoothDevice.safeName(fallback: String = "V10 AI"): String = try {
+        name?.takeIf { it.isNotBlank() } ?: fallback
+    } catch (_: SecurityException) { fallback }
+
+    private fun BluetoothGatt.closeSafely() {
+        // Permission can be revoked between the preflight check and a callback.
+        try { close() } catch (_: SecurityException) { /* Local state is still cleared. */ }
+    }
 
     companion object {
         private const val LOG_TAG = "CubeTraceV10"

@@ -66,7 +66,9 @@ fun Cube3DView(
     modelScale: Float = 1f,
     cubeFrame: SmartCubeFrame = SmartCubeFrame.PERSONAL_YELLOW_BLUE,
     interactiveView: Boolean = false,
-    resetViewKey: Int = 0
+    resetViewKey: Int = 0,
+    // A recorded timeline owns the clock, including pause and seeking.
+    timelineProgress: Float? = null
 ) {
     val focusSource = focusFacelets ?: facelets
     val focusPlan = remember(focusF2L, focusSource) {
@@ -113,7 +115,8 @@ fun Cube3DView(
                 animationSpeed = animationSpeed,
                 cubeFrame = cubeFrame,
                 interactiveView = interactiveView,
-                resetViewKey = resetViewKey
+                resetViewKey = resetViewKey,
+                timelineProgress = timelineProgress
             )
         }
     )
@@ -170,6 +173,7 @@ private class Cube3DAndroidRenderer(context: Context) : View(context) {
     private var animationStartNs = 0L
     private var animationDurationNs = 1L
     private var animationProgress = 1f
+    private var timelineProgress: Float? = null
     private var targetOrientation: Quaternion? = null
     private var renderedOrientation: Quaternion? = null
     private var previousFrameNs = 0L
@@ -212,7 +216,8 @@ private class Cube3DAndroidRenderer(context: Context) : View(context) {
         animationSpeed: Float,
         cubeFrame: SmartCubeFrame,
         interactiveView: Boolean,
-        resetViewKey: Int
+        resetViewKey: Int,
+        timelineProgress: Float?
     ) {
         val nextFacelets = validFacelets(facelets, targetFacelets)
         val nextIdentity = AnimationIdentity(animationKey, animateMove)
@@ -229,6 +234,7 @@ private class Cube3DAndroidRenderer(context: Context) : View(context) {
         } else {
             targetFacelets = nextFacelets
         }
+        this.timelineProgress = timelineProgress?.coerceIn(0f, 1f)
         this.mutedSolved = mutedSolved
         this.focusModel = focusModel
         this.targetFocusModel = targetFocusModel
@@ -317,13 +323,14 @@ private class Cube3DAndroidRenderer(context: Context) : View(context) {
         // accelerating the turn must not freeze the user's physical pose.
         drawCube(canvas, facelets, activeTurn, progress, orientation, focus)
 
-        val animationRunning = activeTurn != null && progress < 1f
+        val animationRunning = timelineProgress == null && activeTurn != null && progress < 1f
         val orientationRunning = targetOrientation != null && renderedOrientation != null &&
             renderedOrientation!!.angularDistance(targetOrientation!!) >= ORIENTATION_DEADBAND
         if (animationRunning || orientationRunning) postInvalidateOnAnimation()
     }
 
     private fun sampleAnimation(now: Long): Float {
+        timelineProgress?.let { return it }
         val turn = activeTurn ?: return 1f
         if (animationProgress >= 1f) return 1f
         val linear = ((now - animationStartNs).toDouble() / animationDurationNs.toDouble())

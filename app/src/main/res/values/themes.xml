@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.CubeTrace" parent="android:style/Theme.Material.Light.NoActionBar">
+    <style name="Theme.CubeTrace.Base" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
-        <item name="android:colorAccent">#1769D1</item>
-        <item name="android:navigationBarColor">#F5F7F8</item>
-        <item name="android:statusBarColor">#F5F7F8</item>
+        <item name="android:colorAccent">#3D7055</item>
+        <item name="android:navigationBarColor">#293B34</item>
+        <item name="android:statusBarColor">#EEF0E6</item>
         <item name="android:windowLightStatusBar">true</item>
-        <item name="android:windowLightNavigationBar">true</item>
         <item name="android:windowActionModeOverlay">true</item>
     </style>
+    <style name="Theme.CubeTrace" parent="Theme.CubeTrace.Base" />
 </resources>

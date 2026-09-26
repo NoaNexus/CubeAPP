@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.CubeTrace" parent="Theme.CubeTrace.Base">
+        <item name="android:navigationBarColor">#EEF0E6</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+</resources>
