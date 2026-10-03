@@ -24,6 +24,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.viewinterop.AndroidView
+import com.cubetrace.app.core.analysis.ReplayPlayback
 import com.cubetrace.app.core.cube.CubeState
 import com.cubetrace.app.core.cube.normalizedMoves
 import com.cubetrace.app.core.device.Quaternion
@@ -68,7 +69,8 @@ fun Cube3DView(
     interactiveView: Boolean = false,
     resetViewKey: Int = 0,
     // A recorded timeline owns the clock, including pause and seeking.
-    timelineProgress: Float? = null
+    timelineProgress: Float? = null,
+    replayPlayback: ReplayPlayback? = null
 ) {
     val focusSource = focusFacelets ?: facelets
     val focusPlan = remember(focusF2L, focusSource) {
@@ -101,6 +103,7 @@ fun Cube3DView(
         },
         update = { renderer ->
             rendererRef[0] = renderer
+            renderer.setReplay(replayPlayback)
             renderer.configure(
                 facelets = facelets,
                 animationFromFacelets = animationFromFacelets,
@@ -174,6 +177,32 @@ private class Cube3DAndroidRenderer(context: Context) : View(context) {
     private var animationDurationNs = 1L
     private var animationProgress = 1f
     private var timelineProgress: Float? = null
+    private var replay: ReplayPlayback? = null
+    private var replayStateIndex = -1
+    private var replayMoveIndex: Int? = null
+
+    fun setReplay(value: ReplayPlayback?) {
+        if (replay === value) return
+        replay = value
+        replayStateIndex = -1
+        replayMoveIndex = null
+        postInvalidateOnAnimation()
+    }
+
+    private fun sampleReplay(now: Long): Float? {
+        val playback = replay ?: return null
+        val frame = playback.frameAt(playback.clock.positionAt(now, playback.timeline.durationMs))
+        val stateIndex = frame.activeIndex?.plus(1) ?: frame.completed
+        if (stateIndex != replayStateIndex || frame.activeIndex != replayMoveIndex) {
+            replayStateIndex = stateIndex
+            replayMoveIndex = frame.activeIndex
+            targetFacelets = playback.states[stateIndex]
+            fromFacelets = playback.states[frame.activeIndex ?: frame.completed]
+            activeTurn = frame.activeIndex?.let { resolveActiveTurn(playback.moveCodes[it]) }
+        }
+        return frame.progress
+    }
+
     private var targetOrientation: Quaternion? = null
     private var renderedOrientation: Quaternion? = null
     private var previousFrameNs = 0L
@@ -194,9 +223,8 @@ private class Cube3DAndroidRenderer(context: Context) : View(context) {
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
 
     init {
-        // This view is deliberately opaque only where it draws; the parent
-        // supplies the page background. Hardware mode keeps Path rasterisation
-        // on the GPU instead of rebuilding Compose paths on the UI tree.
+        // Isolate the animated surface from its rounded Compose parent. Device
+        // profiling shows this layer avoids re-rasterising the surrounding card.
         setLayerType(View.LAYER_TYPE_HARDWARE, null)
         setWillNotDraw(false)
         isClickable = true
@@ -221,7 +249,7 @@ private class Cube3DAndroidRenderer(context: Context) : View(context) {
     ) {
         val nextFacelets = validFacelets(facelets, targetFacelets)
         val nextIdentity = AnimationIdentity(animationKey, animateMove)
-        if (identity != nextIdentity) {
+        if (replay == null && identity != nextIdentity) {
             identity = nextIdentity
             fromFacelets = validFacelets(animationFromFacelets, targetFacelets)
             targetFacelets = nextFacelets
@@ -231,7 +259,7 @@ private class Cube3DAndroidRenderer(context: Context) : View(context) {
             val baseDurationNs = if (reducedMotion) 120_000_000L else 360_000_000L
             animationDurationNs = (baseDurationNs / animationSpeed.coerceIn(0.5f, 2f)).toLong()
                 .coerceAtLeast(1L)
-        } else {
+        } else if (replay == null) {
             targetFacelets = nextFacelets
         }
         this.timelineProgress = timelineProgress?.coerceIn(0f, 1f)
@@ -241,13 +269,14 @@ private class Cube3DAndroidRenderer(context: Context) : View(context) {
         this.modelScale = modelScale
         this.cubeFrame = cubeFrame
         this.interactiveView = interactiveView
-        if (this.resetViewKey != resetViewKey) {
+        val viewChanged = this.resetViewKey != resetViewKey
+        if (viewChanged) {
             this.resetViewKey = resetViewKey
             manualYaw = 0.0
             manualPitch = 0.0
         }
         updateTargetOrientation(sceneOrientation)
-        postInvalidateOnAnimation()
+        if (replay == null || viewChanged) postInvalidateOnAnimation()
     }
 
     fun updateTargetOrientation(value: Quaternion?) {
@@ -311,7 +340,7 @@ private class Cube3DAndroidRenderer(context: Context) : View(context) {
     override fun onDraw(canvas: AndroidCanvas) {
         super.onDraw(canvas)
         val now = System.nanoTime()
-        val progress = sampleAnimation(now)
+        val progress = sampleReplay(now) ?: sampleAnimation(now)
         val orientation = composeViewOrientation(sampleOrientation(now))
         val facelets = if (activeTurn != null && progress < 1f) fromFacelets else targetFacelets
         val focus = if (activeTurn != null && progress < 1f) {
@@ -323,10 +352,11 @@ private class Cube3DAndroidRenderer(context: Context) : View(context) {
         // accelerating the turn must not freeze the user's physical pose.
         drawCube(canvas, facelets, activeTurn, progress, orientation, focus)
 
-        val animationRunning = timelineProgress == null && activeTurn != null && progress < 1f
+        val replayRunning = replay?.let { it.clock.running && it.clock.positionAt(now, it.timeline.durationMs) < it.timeline.durationMs } == true
+        val animationRunning = replay == null && timelineProgress == null && activeTurn != null && progress < 1f
         val orientationRunning = targetOrientation != null && renderedOrientation != null &&
             renderedOrientation!!.angularDistance(targetOrientation!!) >= ORIENTATION_DEADBAND
-        if (animationRunning || orientationRunning) postInvalidateOnAnimation()
+        if (replayRunning || animationRunning || orientationRunning) postInvalidateOnAnimation()
     }
 
     private fun sampleAnimation(now: Long): Float {
@@ -416,6 +446,11 @@ private class Cube3DAndroidRenderer(context: Context) : View(context) {
             val quad = cubeQuads[index]
             val item = items[index]
             val rotateLayer = turnActive && turn!!.affects(quad.cubie)
+            // Cull back faces before transforming their three other vectors or shading.
+            transform(quad.normal, rotateLayer, axis, turnCos, turnSin, frameOrientation, transformedNormal)
+            val facing = transformedNormal[0] * cameraDirection.x +
+                transformedNormal[1] * cameraDirection.y + transformedNormal[2] * cameraDirection.z
+            if (facing <= 0.025f) continue
             transform(
                 quad.center, rotateLayer, axis, turnCos, turnSin, frameOrientation,
                 transformedCenter
@@ -427,10 +462,6 @@ private class Cube3DAndroidRenderer(context: Context) : View(context) {
             transform(
                 quad.vertical, rotateLayer, axis, turnCos, turnSin, frameOrientation,
                 transformedVertical
-            )
-            transform(
-                quad.normal, rotateLayer, axis, turnCos, turnSin, frameOrientation,
-                transformedNormal
             )
             item.centerX = transformedCenter[0]
             item.centerY = transformedCenter[1]
@@ -449,9 +480,6 @@ private class Cube3DAndroidRenderer(context: Context) : View(context) {
             item.sticker = quad.stickerIndex != null
             item.color = shadedColor(baseColor(quad, facelets, focusModel), item.normalX, item.normalY, item.normalZ)
 
-            val facing = item.normalX * cameraDirection.x +
-                item.normalY * cameraDirection.y + item.normalZ * cameraDirection.z
-            if (facing <= 0.025f) continue
             item.depthKey = (
                 (item.centerX * cameraDirection.x +
                     item.centerY * cameraDirection.y +

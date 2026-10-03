@@ -71,6 +71,7 @@ internal fun WorkbenchButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    contentPadding: PaddingValues = PaddingValues(horizontal = 18.dp, vertical = 12.dp),
     content: @Composable RowScope.() -> Unit
 ) {
     val interaction = remember { MutableInteractionSource() }
@@ -88,7 +89,7 @@ internal fun WorkbenchButton(
         },
         border = BorderStroke(1.dp, if (enabled) CubeTraceColors.track.copy(alpha = 0.6f) else CubeTraceColors.line),
         colors = ButtonDefaults.buttonColors(containerColor = if (pressed) CubeTraceColors.graphite else CubeTraceColors.track),
-        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 12.dp),
+        contentPadding = contentPadding,
         content = content
     )
 }

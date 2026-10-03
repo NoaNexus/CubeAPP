@@ -38,6 +38,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -65,8 +67,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -79,6 +79,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -88,7 +89,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameNanos
+import com.cubetrace.app.core.analysis.ReplayClock
+import com.cubetrace.app.core.analysis.ReplayPlayback
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -115,6 +117,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -1536,7 +1539,7 @@ private fun CubeTraceApp(viewModel: CubeTraceViewModel) {
             ) { innerPadding ->
                 val contentMaxWidth = if (section == AppSection.FORMULA || section == AppSection.RECORDS) 1200.dp else 900.dp
                 Box(
-                    modifier = Modifier.fillMaxSize().padding(innerPadding),
+                    modifier = Modifier.fillMaxSize().padding(top = innerPadding.calculateTopPadding()),
                     contentAlignment = Alignment.TopCenter
                 ) {
                     Box(modifier = Modifier.fillMaxHeight().widthIn(max = contentMaxWidth).fillMaxWidth()) {
@@ -1827,34 +1830,40 @@ private fun DeviceStatusChip(status: DeviceStatus, onClick: () -> Unit) {
 }
 
 @Composable
+private fun floatingNavigationClearance() = 84.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+
+@Composable
 private fun CubeTraceNavigation(section: AppSection, onSection: (AppSection) -> Unit) {
     Box(
-        modifier = Modifier.fillMaxWidth().background(CubeTraceColors.mist).padding(horizontal = 12.dp, vertical = 6.dp),
+        modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 20.dp, vertical = 8.dp),
         contentAlignment = Alignment.Center
     ) {
-        NavigationBar(
-            containerColor = CubeTraceColors.paper,
-            tonalElevation = 0.dp,
-            modifier = Modifier.widthIn(max = 720.dp).fillMaxWidth()
-                .shadow(4.dp, RoundedCornerShape(24.dp))
-                .clip(RoundedCornerShape(24.dp))
-                .border(1.dp, CubeTraceColors.line, RoundedCornerShape(24.dp))
+        Row(
+            modifier = Modifier.widthIn(max = 480.dp).fillMaxWidth()
+                .shadow(8.dp, RoundedCornerShape(28.dp))
+                .clip(RoundedCornerShape(28.dp))
+                .background(CubeTraceColors.paper.copy(alpha = 0.88f))
+                .border(1.dp, Color.White.copy(alpha = 0.65f), RoundedCornerShape(28.dp))
+                .padding(4.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-        AppSection.entries.forEach { item ->
-            NavigationBarItem(
-                selected = item == section,
-                onClick = { onSection(item) },
-                icon = { NavigationGlyph(item, item == section) },
-                label = { Text(item.label, fontSize = 12.sp, fontWeight = if (item == section) FontWeight.SemiBold else FontWeight.Normal) },
-                colors = androidx.compose.material3.NavigationBarItemDefaults.colors(
-                    selectedIconColor = CubeTraceColors.track,
-                    selectedTextColor = CubeTraceColors.track,
-                    indicatorColor = CubeTraceColors.trackSoft,
-                    unselectedIconColor = CubeTraceColors.muted,
-                    unselectedTextColor = CubeTraceColors.muted
-                )
-            )
-        }
+            AppSection.entries.forEach { item ->
+                val selected = item == section
+                Column(
+                    modifier = Modifier.weight(1f).heightIn(min = 52.dp)
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(if (selected) CubeTraceColors.trackSoft.copy(alpha = 0.8f) else Color.Transparent)
+                        .selectable(selected = selected, role = androidx.compose.ui.semantics.Role.Tab, onClick = { onSection(item) })
+                        .padding(vertical = 5.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    NavigationGlyph(item, selected)
+                    Text(item.label, fontSize = 11.sp, lineHeight = 16.sp, maxLines = 1,
+                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                        color = if (selected) CubeTraceColors.track else CubeTraceColors.muted)
+                }
+            }
         }
     }
 }
@@ -1925,7 +1934,7 @@ private fun FormulaScreen(
             modifier = Modifier.fillMaxSize().padding(horizontal = gridPadding),
             verticalArrangement = Arrangement.spacedBy(10.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
-            contentPadding = PaddingValues(top = 2.dp, bottom = 24.dp)
+            contentPadding = PaddingValues(top = 2.dp, bottom = floatingNavigationClearance())
         ) {
             item(span = { GridItemSpan(maxLineSpan) }) {
                 Column(modifier = Modifier.fillMaxWidth()) {
@@ -1950,11 +1959,11 @@ private fun FormulaScreen(
                         focusedBorderColor = CubeTraceColors.track
                     )
                 )
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(top = 14.dp, bottom = 4.dp)) {
-                    item { StageChip("全部", stage == null) { onStage(null) } }
-                    item { StageChip("F2L · 41组", stage == Stage.F2L) { onStage(Stage.F2L) } }
-                    item { StageChip("OLL · 57组", stage == Stage.OLL) { onStage(Stage.OLL) } }
-                    item { StageChip("PLL · 21组", stage == Stage.PLL) { onStage(Stage.PLL) } }
+                Row(Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    StageChip("全部", stage == null, Modifier.weight(1f)) { onStage(null) }
+                    StageChip("F2L", stage == Stage.F2L, Modifier.weight(1f)) { onStage(Stage.F2L) }
+                    StageChip("OLL", stage == Stage.OLL, Modifier.weight(1f)) { onStage(Stage.OLL) }
+                    StageChip("PLL", stage == Stage.PLL, Modifier.weight(1f)) { onStage(Stage.PLL) }
                 }
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(top = 5.dp, bottom = 12.dp)) {
                     CaseFilter.entries.forEach { filterItem ->
@@ -2028,11 +2037,12 @@ private fun FormulaScreen(
 }
 
 @Composable
-private fun StageChip(label: String, selected: Boolean, onClick: () -> Unit) {
+private fun StageChip(label: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
     FilterChip(
+        modifier = modifier,
         selected = selected,
         onClick = onClick,
-        label = { Text(label, fontSize = 13.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal) },
+        label = { Text(label, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center, maxLines = 1, fontSize = 13.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal) },
         colors = FilterChipDefaults.filterChipColors(
             selectedContainerColor = CubeTraceColors.track,
             selectedLabelColor = Color.White,
@@ -2135,7 +2145,7 @@ private fun TrainingScreen(
     onOpenCase: (CubeCase) -> Unit
 ) {
     val current = queue.getOrNull(index)
-    Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
+    Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp).padding(bottom = floatingNavigationClearance())) {
         WorkbenchBanner("熟练，来自每一次", "从识别到上手，按自己的节奏练习。", "练习场 · 五级复习箱")
         Spacer(Modifier.height(18.dp))
         Row(
@@ -2300,6 +2310,7 @@ private fun TimerScreen(
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = if (solvingFocus) 10.dp else 16.dp)
+            .padding(bottom = floatingNavigationClearance())
     ) {
         if (solvingFocus) {
             Row(
@@ -3035,7 +3046,7 @@ private fun RecordsScreen(
     val rolling = dashboard.rolling
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp)
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = floatingNavigationClearance())
     ) {
         item(key = "records-header") {
             WorkbenchBanner("看见自己的进步", "回看动作与停顿，找到下一次的突破口。", "还原手记 · ${solves.size} 次记录")
@@ -4270,52 +4281,54 @@ private fun SolveReplay3DPlayer(
             recorded.steps.zipWithNext().any { (a, b) -> a.completionMs == b.completionMs }
     }
     var realTiming by remember(solveId) { mutableStateOf(recorded.issues.isEmpty()) }
-    var playing by remember(solveId) { mutableStateOf(false) }
-    var speed by remember(solveId) { mutableStateOf(1f) }
+    var clock by remember(solveId) { mutableStateOf(ReplayClock()) }
     var positionMs by remember(solveId) { mutableStateOf(0.0) }
-    // A manual step also permits inspecting individual moves in a same-time packet.
     var manualStep by remember(solveId) { mutableStateOf<Int?>(0) }
     var viewResetKey by remember(solveId) { mutableStateOf(0) }
     val timeline = if (realTiming) recorded else uniform
-    val sample = timeline.snapshotAt(positionMs.toLong(), if (reducedMotion) 0 else 100)
-    val completed = manualStep ?: sample.completedStepIndex
-    val activeIndex = when {
-        manualStep != null || reducedMotion -> null
-        !realTiming -> completed.takeIf { it < moves.size }
-        else -> sample.rotatingMoveIndex
+    val playing = clock.running
+    val speed = clock.speed
+    fun changeClock(position: Double? = null, running: Boolean = clock.running, rate: Float = clock.speed) {
+        val now = System.nanoTime()
+        val current = position ?: clock.positionAt(now, timeline.durationMs)
+        clock = ReplayClock(current, now, rate, running)
+        positionMs = current
     }
-    val progress = if (activeIndex != null) {
-        val start = if (realTiming) sample.animationStartMs!! else timeline.steps.getOrNull(activeIndex - 1)?.completionMs ?: 0L
-        val end = timeline.steps[activeIndex].completionMs
-        val linear = ((positionMs - start) / (end - start).coerceAtLeast(1L)).toFloat().coerceIn(0f, 1f)
-        linear * linear * (3f - 2f * linear)
-    } else 1f
+    val moveCodes = remember(moves) { moves.map { it.code } }
+    val playback = remember(timeline, states, moveCodes, clock, realTiming, reducedMotion, manualStep) {
+        ReplayPlayback(timeline, states, moveCodes, clock, realTiming, reducedMotion, manualStep)
+    }
+    val frame = playback.frameAt(positionMs)
+    val completed = frame.completed
+    val activeIndex = frame.activeIndex
     val currentMove = moves.getOrNull(activeIndex ?: completed)
     val currentPhase = analysis.phases.firstOrNull {
         completed in it.startOrdinalExclusive until it.endOrdinalInclusive
     }
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
+    DisposableEffect(lifecycleOwner, clock, timeline) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP) playing = false
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP) changeClock(running = false)
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
-    LaunchedEffect(solveId, playing, speed, timeline) {
-        if (!playing) return@LaunchedEffect
-        val anchorPosition = positionMs
-        val anchorFrame = withFrameNanos { it }
-        while (playing) {
-            val now = withFrameNanos { it }
-            positionMs = (anchorPosition + (now - anchorFrame) / 1_000_000.0 * speed).coerceAtMost(timeline.durationMs.toDouble())
-            if (positionMs >= timeline.durationMs) playing = false
+    LaunchedEffect(clock, timeline) {
+        if (!clock.running) return@LaunchedEffect
+        while (true) {
+            positionMs = clock.positionAt(System.nanoTime(), timeline.durationMs)
+            if (positionMs >= timeline.durationMs) {
+                changeClock(position = timeline.durationMs.toDouble(), running = false)
+                break
+            }
+            // Labels and slider need only 20 Hz; the native cube renders every display frame.
+            delay(50L)
         }
     }
     fun seekStep(target: Int) {
-        playing = false
-        manualStep = target.coerceIn(0, moves.size)
-        positionMs = if (target <= 0) 0.0 else timeline.steps[target - 1].completionMs.toDouble().coerceAtMost(timeline.durationMs.toDouble())
+        val step = target.coerceIn(0, moves.size)
+        manualStep = step
+        changeClock(position = if (step == 0) 0.0 else timeline.steps[step - 1].completionMs.toDouble(), running = false)
     }
     WorkbenchCard(modifier = Modifier.fillMaxWidth().padding(top = 10.dp), shape = RoundedCornerShape(22.dp)) {
         Column(Modifier.fillMaxWidth().padding(14.dp)) {
@@ -4332,14 +4345,14 @@ private fun SolveReplay3DPlayer(
                         }, fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 5.dp)
                     )
                 }
-                TextButton(onClick = { playing = false; open = false }) { Text("收起") }
+                TextButton(onClick = { changeClock(running = false); open = false }) { Text("收起") }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf(true to "真实节奏", false to "匀速观察").forEach { (real, label) ->
                     FilterChip(
                         selected = realTiming == real,
                         enabled = !real || recorded.issues.isEmpty(),
-                        onClick = { playing = false; realTiming = real; positionMs = 0.0; manualStep = 0 },
+                        onClick = { changeClock(position = 0.0, running = false); realTiming = real; manualStep = 0 },
                         label = { Text(label) }
                     )
                 }
@@ -4357,7 +4370,7 @@ private fun SolveReplay3DPlayer(
                 animationFromFacelets = activeIndex?.let { states[it] },
                 animateMove = activeIndex?.let { moves[it].code },
                 animationKey = activeIndex ?: completed,
-                timelineProgress = progress,
+                replayPlayback = playback,
                 modifier = Modifier.fillMaxWidth().height(260.dp).clip(RoundedCornerShape(18.dp)).background(CubeTraceColors.blueWash),
                 reducedMotion = reducedMotion,
                 cubeFrame = SmartCubeFrame.PERSONAL_YELLOW_BLUE,
@@ -4367,7 +4380,7 @@ private fun SolveReplay3DPlayer(
             ViewOrbitControls { viewResetKey++ }
             Slider(
                 value = positionMs.toFloat().coerceIn(0f, timeline.durationMs.coerceAtLeast(1L).toFloat()),
-                onValueChange = { playing = false; manualStep = null; positionMs = it.toDouble() },
+                onValueChange = { manualStep = null; changeClock(position = it.toDouble(), running = false) },
                 valueRange = 0f..timeline.durationMs.coerceAtLeast(1L).toFloat(),
                 enabled = timeline.durationMs > 0L,
                 modifier = Modifier.fillMaxWidth()
@@ -4379,20 +4392,20 @@ private fun SolveReplay3DPlayer(
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("倍速", fontSize = 12.sp, color = CubeTraceColors.muted)
                 listOf(0.5f, 1f, 2f).forEach { candidate ->
-                    FilterChip(selected = speed == candidate, onClick = { speed = candidate }, label = { Text(if (candidate == 0.5f) "0.5×" else "${candidate.toInt()}×") })
+                    FilterChip(selected = speed == candidate, onClick = { changeClock(rate = candidate) }, label = { Text(if (candidate == 0.5f) "0.5×" else "${candidate.toInt()}×") })
                 }
             }
-            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                TextButton(enabled = completed > 0, onClick = { seekStep(completed - 1) }) { Text("上一步") }
-                TextButton(onClick = { seekStep(0) }) { Text("重置") }
-                TextButton(enabled = completed < moves.size, onClick = { seekStep(completed + 1) }) { Text("下一步") }
-                WorkbenchButton(onClick = {
-                    if (!playing) {
-                        if (positionMs >= timeline.durationMs) positionMs = 0.0
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 2.dp), enabled = completed > 0, onClick = { seekStep(completed - 1) }) { Text("上一步", maxLines = 1, fontSize = 12.sp) }
+                TextButton(modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 2.dp), onClick = { seekStep(0) }) { Text("重置", maxLines = 1, fontSize = 12.sp) }
+                TextButton(modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 2.dp), enabled = completed < moves.size, onClick = { seekStep(completed + 1) }) { Text("下一步", maxLines = 1, fontSize = 12.sp) }
+                WorkbenchButton(modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 4.dp, vertical = 12.dp), onClick = {
+                    if (playing) changeClock(running = false)
+                    else {
                         manualStep = null
+                        changeClock(position = if (positionMs >= timeline.durationMs) 0.0 else null, running = true)
                     }
-                    playing = !playing
-                }) { Text(if (playing) "暂停" else "播放") }
+                }) { Text(if (playing) "暂停" else "播放", maxLines = 1, fontSize = 12.sp) }
             }
             Text("可拖动时间轴定位；暂停会保留当前进度。面转过渡为示意，不改变动作时间点。", fontSize = 11.sp, lineHeight = 17.sp, color = CubeTraceColors.muted, modifier = Modifier.padding(top = 8.dp))
             if (realTiming && hasInstantMoves) {

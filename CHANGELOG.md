@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1 · compact controls and native replay frames
+
+- Fits all four formula stage filters and replay transport controls within the available width, including the Play button.
+- Samples replay directly in the native display loop with a shared monotonic clock. Updates labels and the slider at 20 Hz, culls back faces before unnecessary geometry/shading work, and preserves recorded completion times, pauses, speed changes and seeking.
+- Replaces the tall bottom bar with a compact translucent floating navigation capsule; scroll content passes behind it with enough trailing space to keep the last item accessible.
+- Adds pause/speed/clock and between-control-update animation regression checks.
+
 ## 0.4.0 · practice setups, recorded timing and woodland workbench
 
 - Adds verified practice scrambles to formula details and recognition practice, with copying and a direct practice entry. All 119 catalog setups reproduce their exact displayed state, independent of the selected algorithm variant.

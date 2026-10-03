@@ -17,7 +17,9 @@ object ReplayTimelineChecks {
         invalidTimesAreExplicitAndCompletionsNeverGoBackward()
         movesPastDurationRemainVisibleAsAnAnomaly()
         negativeDurationIsExplicit()
-        println("ReplayTimelineChecks: 9 passed")
+        sharedClockPreservesPauseSpeedAndEnd()
+        nativeFramesAdvanceBetweenControlUpdates()
+        println("ReplayTimelineChecks: 11 passed")
     }
 
     private fun leadingAndTrailingPausesArePreserved() {
@@ -133,6 +135,31 @@ object ReplayTimelineChecks {
         check(timeline.durationMs == 0L)
         check(ReplayTimelineIssue.NEGATIVE_TOTAL_DURATION in timeline.issues)
         check(timeline.snapshotAt(0L).hasTimingAnomaly)
+    }
+
+    private fun sharedClockPreservesPauseSpeedAndEnd() {
+        val playing = ReplayClock(200.0, 1_000_000_000L, 1f, true)
+        val paused = ReplayClock(playing.positionAt(1_150_000_000L, 1000), 1_150_000_000L, 1f, false)
+        check(paused.positionAt(9_000_000_000L, 1000) == 350.0)
+        val fast = ReplayClock(paused.positionMs, 9_000_000_000L, 2f, true)
+        check(fast.positionAt(9_100_000_000L, 1000) == 550.0)
+        val slow = ReplayClock(fast.positionAt(9_100_000_000L, 1000), 9_100_000_000L, 0.5f, true)
+        check(slow.positionAt(9_300_000_000L, 1000) == 650.0)
+        check(slow.positionAt(20_000_000_000L, 1000) == 1000.0)
+    }
+
+    private fun nativeFramesAdvanceBetweenControlUpdates() {
+        val timeline = ReplayTimeline.create(listOf(move(0, 500L), move(1, 880L)), 1000L)
+        val states = listOf("start", "first", "second")
+        val real = ReplayPlayback(timeline, states, listOf("R", "U"), ReplayClock(), true, false, null)
+        check(real.frameAt(399.0).activeIndex == null)
+        val frames = (400..499 step 8).map { real.frameAt(it.toDouble()).progress }
+        check(frames.zipWithNext().all { (a, b) -> b > a })
+        check(real.frameAt(500.0).completed == 1)
+        val uniform = ReplayPlayback(timeline, states, listOf("R", "U"), ReplayClock(), false, false, null)
+        check(uniform.frameAt(100.0).progress < uniform.frameAt(108.0).progress)
+        val manual = ReplayPlayback(timeline, states, listOf("R", "U"), ReplayClock(), true, false, 1)
+        check(manual.frameAt(500.0) == ReplayVisualFrame(1, null, 1f))
     }
 
     private fun move(ordinal: Int, elapsedMs: Long, quality: MoveTimeQuality = MoveTimeQuality.DEVICE) =
