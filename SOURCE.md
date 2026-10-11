@@ -2,7 +2,7 @@
 
 - Application: 方迹 CubeTrace
 - Application ID: `com.cubetrace.app`
-- Version: `0.4.1` / versionCode `13`
+- Version: `0.4.2` / versionCode `14`
 - License baseline: GPL-3.0-only
 - Build: Java 17 + Android SDK 35 / Build Tools 34.0.0 + pinned Gradle 9.4.1 Wrapper, `./gradlew :app:assembleRelease`
 - Network permission: none

@@ -1534,15 +1534,48 @@ private fun CubeTraceApp(viewModel: CubeTraceViewModel) {
                     )
                 },
                 bottomBar = {
-                    CubeTraceNavigation(section, viewModel::selectSection)
+                    CubeTraceNavigation(section) { target ->
+                        if (target != section) viewModel.closeSolve()
+                        viewModel.selectSection(target)
+                    }
                 }
             ) { innerPadding ->
-                val contentMaxWidth = if (section == AppSection.FORMULA || section == AppSection.RECORDS) 1200.dp else 900.dp
+                val contentMaxWidth = 1440.dp
                 Box(
                     modifier = Modifier.fillMaxSize().padding(top = innerPadding.calculateTopPadding()),
                     contentAlignment = Alignment.TopCenter
                 ) {
-                    Box(modifier = Modifier.fillMaxHeight().widthIn(max = contentMaxWidth).fillMaxWidth()) {
+                    BoxWithConstraints(modifier = Modifier.fillMaxHeight().widthIn(max = contentMaxWidth).fillMaxWidth()) {
+                    val wideRecords = section == AppSection.RECORDS && maxWidth >= 900.dp && maxWidth > maxHeight
+                    androidx.activity.compose.BackHandler(enabled = wideRecords && selectedSolve != null) { viewModel.closeSolve() }
+                    val selectedReview: @Composable (Boolean) -> Unit = { embedded ->
+                    selectedSolve?.let { solveToReview ->
+                        SolveReviewDialog(
+                            embedded = embedded,
+                            solve = solveToReview,
+                            pauseThreshold = settings.pauseThresholdMs,
+                            assistLabels = settings.assistLabels,
+                            reducedMotion = settings.reducedMotion,
+                            review = solveReview.takeIf { it.solveId == solveToReview.id }
+                                ?: SolveReviewComputation(solveId = solveToReview.id, loading = true),
+                            currentPendingSolve = viewModel.isCurrentPendingSolve(solveToReview),
+                            onDismiss = viewModel::closeSolve,
+                            onPracticeScramble = { preservePendingResult, onFinished ->
+                                viewModel.practiceScramble(
+                                    item = solveToReview,
+                                    preservePendingResult = preservePendingResult
+                                ) { success ->
+                                    snackbar = if (success) {
+                                        "已载入原打乱，请按当前设置重新练习"
+                                    } else {
+                                        "请先处理计时页正在进行的还原，或稍后重试"
+                                    }
+                                    onFinished(success)
+                                }
+                            }
+                        )
+                    }
+                    }
                     when (section) {
                         AppSection.FORMULA -> FormulaScreen(
                             cases = cases,
@@ -1580,7 +1613,11 @@ private fun CubeTraceApp(viewModel: CubeTraceViewModel) {
                             onDeepAnalysis = viewModel::openCurrentSolveReview,
                             onDevice = { deviceOpen = true }
                         )
-                        AppSection.RECORDS -> RecordsScreen(
+                        AppSection.RECORDS -> Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Box(Modifier.weight(if (wideRecords) 0.36f else 1f).fillMaxHeight()) {
+                            RecordsScreen(
+                            compact = wideRecords,
+                            selectedSolveId = selectedSolve?.id,
                             solves = solves,
                             pauseThreshold = settings.pauseThresholdMs,
                             dashboard = recordsDashboard,
@@ -1588,6 +1625,26 @@ private fun CubeTraceApp(viewModel: CubeTraceViewModel) {
                             onOpenSolve = viewModel::openSolve,
                             onExport = { backupLauncher.launch("CubeTrace-backup.zip") }
                         )
+                            }
+                            if (wideRecords) {
+                                Surface(
+                                    modifier = Modifier.weight(0.64f).fillMaxHeight().padding(end = 16.dp, bottom = floatingNavigationClearance()),
+                                    shape = RoundedCornerShape(24.dp),
+                                    color = CubeTraceColors.paper
+                                ) {
+                                    if (selectedSolve == null) {
+                                        Box(Modifier.fillMaxSize().padding(28.dp), contentAlignment = Alignment.Center) {
+                                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                                Text("选择一次还原", fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
+                                                Text("左侧浏览成绩，右侧查看动作、三维回放与提速建议。", color = CubeTraceColors.muted, modifier = Modifier.padding(top = 12.dp))
+                                            }
+                                        }
+                                    } else {
+                                        androidx.compose.runtime.key(selectedSolve!!.id) { selectedReview(true) }
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     if (selectedCase != null) {
@@ -1606,31 +1663,7 @@ private fun CubeTraceApp(viewModel: CubeTraceViewModel) {
                             onDeleteVariant = { viewModel.deleteVariant(selectedCase!!, it) }
                         )
                     }
-                    selectedSolve?.let { solveToReview ->
-                        SolveReviewDialog(
-                            solve = solveToReview,
-                            pauseThreshold = settings.pauseThresholdMs,
-                            assistLabels = settings.assistLabels,
-                            reducedMotion = settings.reducedMotion,
-                            review = solveReview.takeIf { it.solveId == solveToReview.id }
-                                ?: SolveReviewComputation(solveId = solveToReview.id, loading = true),
-                            currentPendingSolve = viewModel.isCurrentPendingSolve(solveToReview),
-                            onDismiss = viewModel::closeSolve,
-                            onPracticeScramble = { preservePendingResult, onFinished ->
-                                viewModel.practiceScramble(
-                                    item = solveToReview,
-                                    preservePendingResult = preservePendingResult
-                                ) { success ->
-                                    snackbar = if (success) {
-                                        "已载入原打乱，请按当前设置重新练习"
-                                    } else {
-                                        "请先处理计时页正在进行的还原，或稍后重试"
-                                    }
-                                    onFinished(success)
-                                }
-                            }
-                        )
-                    }
+                    if (!wideRecords) selectedReview(false)
                     if (skillOpen) {
                         SkillLevelDialog(
                             estimate = recordsDashboard.skillEstimate,
@@ -2145,8 +2178,36 @@ private fun TrainingScreen(
     onOpenCase: (CubeCase) -> Unit
 ) {
     val current = queue.getOrNull(index)
-    Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp).padding(bottom = floatingNavigationClearance())) {
-        WorkbenchBanner("熟练，来自每一次", "从识别到上手，按自己的节奏练习。", "练习场 · 五级复习箱")
+    val header: @Composable (Boolean) -> Unit = { compact ->
+        if (compact) {
+            WorkbenchCard(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = CubeTraceColors.trackSoft)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("练习场 · 五级复习箱", color = CubeTraceColors.track, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Text("识别训练", fontSize = 18.sp, fontWeight = FontWeight.ExtraBold)
+                        Text("今日到期 ${queue.count { it.dueAt <= System.currentTimeMillis() }} 个 · 先观察，再揭示答案", fontSize = 11.sp, color = CubeTraceColors.muted, modifier = Modifier.padding(top = 2.dp))
+                    }
+                    Text(
+                        if (queue.isEmpty()) "—" else "${index.coerceAtMost(queue.size)} / ${queue.size}",
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = CubeTraceColors.graphite
+                    )
+                }
+            }
+        } else {
+            WorkbenchBanner("熟练，来自每一次", "从识别到上手，按自己的节奏练习。", "练习场 · 五级复习箱")
+        }
+        if (!compact) {
         Spacer(Modifier.height(18.dp))
         Row(
             modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -2156,7 +2217,10 @@ private fun TrainingScreen(
             StatBlock("本轮", if (queue.isEmpty()) "—" else "${index.coerceAtMost(queue.size)} / ${queue.size}", "进度")
             StatBlock("方式", "识别", "训练")
         }
-        Spacer(Modifier.height(18.dp))
+        }
+        Spacer(Modifier.height(if (compact) 10.dp else 18.dp))
+    }
+    val casePanel: @Composable (Boolean) -> Unit = { showPreview ->
         if (current == null || index >= queue.size) {
             EmptyState("今天先从一个案例开始", "默认从生疏项抽取 12 个；也可以从公式详情直接练习。", onStart, "开始本轮训练")
         } else {
@@ -2164,14 +2228,18 @@ private fun TrainingScreen(
             Spacer(Modifier.height(14.dp))
             WorkbenchCard(colors = CardDefaults.cardColors(containerColor = CubeTraceColors.paper), shape = RoundedCornerShape(12.dp)) {
                 Column(modifier = Modifier.fillMaxWidth().padding(18.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    if (showPreview) {
                     Text("识别训练", color = CubeTraceColors.track, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                     Text(current.name, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
                     Text(current.orientationRule, fontSize = 12.sp, color = CubeTraceColors.muted)
-                    Spacer(Modifier.height(10.dp))
-                    CaseStatePreview(current.stage, current.canonicalState, Modifier.size(220.dp), assistLabels)
+                        Spacer(Modifier.height(10.dp))
+                        CaseStatePreview(current.stage, current.canonicalState, Modifier.size(220.dp), assistLabels)
+                    }
                     Spacer(Modifier.height(12.dp))
-                    PracticeScramblePanel(current)
-                    Spacer(Modifier.height(12.dp))
+                    if (showPreview) {
+                        PracticeScramblePanel(current)
+                        Spacer(Modifier.height(12.dp))
+                    }
                     if (revealed) {
                         Text("首选公式", fontSize = 12.sp, color = CubeTraceColors.muted)
                         Text(current.variant.notation, fontFamily = FontFamily.Monospace, fontSize = 17.sp, color = CubeTraceColors.graphite, modifier = Modifier.padding(top = 6.dp))
@@ -2186,12 +2254,73 @@ private fun TrainingScreen(
                         WorkbenchButton(onClick = onReveal, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text("显示答案") }
                     }
                     TextButton(onClick = { onOpenCase(current) }) { Text("打开案例详情") }
+                    if (!showPreview) {
+                        Spacer(Modifier.height(8.dp))
+                        PracticeScramblePanel(current)
+                    }
                 }
             }
         }
+    }
+    val rules: @Composable () -> Unit = {
         Spacer(Modifier.height(18.dp))
         SectionRule("训练规则")
         Text("错误降一级；连续正确升一级。迟疑不会自动判错，跳过不改变掌握度。", fontSize = 13.sp, color = CubeTraceColors.muted, modifier = Modifier.padding(top = 10.dp))
+    }
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val tabletLandscape = maxWidth >= 840.dp && maxWidth > maxHeight
+        if (tabletLandscape) {
+            Row(
+                modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp).padding(bottom = floatingNavigationClearance()),
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                WorkbenchCard(
+                    modifier = Modifier.weight(0.9f).fillMaxHeight(),
+                    shape = RoundedCornerShape(24.dp),
+                    colors = CardDefaults.cardColors(containerColor = CubeTraceColors.paper)
+                ) {
+                    Column(Modifier.fillMaxSize().padding(18.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("当前识别图", color = CubeTraceColors.track, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        if (current == null || index >= queue.size) {
+                            Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                                Text("开始本轮训练后，这里会显示当前案例", color = CubeTraceColors.muted, textAlign = TextAlign.Center)
+                            }
+                        } else {
+                            Text(current.name, fontSize = 20.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 4.dp))
+                            Text(current.orientationRule, fontSize = 12.sp, color = CubeTraceColors.muted)
+                            Spacer(Modifier.height(12.dp))
+                            BoxWithConstraints(
+                                modifier = Modifier.fillMaxWidth().weight(1f).padding(vertical = 10.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                val previewSize = minOf(maxWidth, maxHeight).coerceAtMost(320.dp).coerceAtLeast(1.dp)
+                                Box(
+                                    modifier = Modifier.size(previewSize).clip(RoundedCornerShape(18.dp)).background(CubeTraceColors.blueWash),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    CaseStatePreview(current.stage, current.canonicalState, Modifier.fillMaxSize().padding(14.dp), assistLabels)
+                                }
+                            }
+                            Text("先观察局面，再在右侧显示答案", fontSize = 12.sp, color = CubeTraceColors.muted, textAlign = TextAlign.Center)
+                            Spacer(Modifier.height(8.dp))
+                        }
+                    }
+                }
+                Column(
+                    modifier = Modifier.weight(1.1f).fillMaxHeight().verticalScroll(rememberScrollState())
+                ) {
+                    header(true)
+                    casePanel(false)
+                    rules()
+                }
+            }
+        } else {
+            Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp).padding(bottom = floatingNavigationClearance())) {
+                header(false)
+                casePanel(true)
+                rules()
+            }
+        }
     }
 }
 
@@ -2305,14 +2434,62 @@ private fun TimerScreen(
         } else {
             timer.phase in setOf(TimerPhase.IDLE, TimerPhase.READY, TimerPhase.INSPECTION, TimerPhase.WAITING_CUBE)
         }
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val wide = maxWidth >= 840.dp && maxWidth > maxHeight
+        val landscapeCubeHeight = (maxHeight - 160.dp).coerceIn(220.dp, 440.dp)
+        val cubePanel: @Composable () -> Unit = {
+            Column(Modifier.fillMaxWidth().padding(if (wide) 20.dp else 0.dp)) {
+                Text(
+                    text = if (liveFacelets != null) "智能魔方实时局面" else "打乱局面预览",
+                    fontSize = if (solvingFocus) 13.sp else 12.sp,
+                    fontWeight = if (solvingFocus) FontWeight.Medium else FontWeight.Normal,
+                    color = if (liveFacelets != null) CubeTraceColors.track else CubeTraceColors.muted,
+                    modifier = Modifier.padding(top = if (solvingFocus) 2.dp else 10.dp)
+                )
+                Cube3DView(
+                    facelets = displayFacelets,
+                    animationFromFacelets = deviceLiveState.animationFromFacelets,
+                    animateMove = if (liveFacelets != null) deviceLiveState.lastMove else null,
+                    animationKey = deviceLiveState.sequence ?: 0,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(if (wide) landscapeCubeHeight else if (solvingFocus) 300.dp else 178.dp)
+                        .clipToBounds(),
+                    sceneOrientation = null,
+                    sceneOrientationFlow = if (liveFacelets != null && gyroFollowEnabled) deviceOrientation else null,
+                    modelScale = if (wide || solvingFocus) 0.94f else 0.74f,
+                    animationSpeed = if (liveFacelets != null) 2f else 1f,
+                    cubeFrame = smartCubeFrame
+                )
+                if (liveFacelets != null) {
+                    Text(
+                        text = "已同步 · 局面序号 ${deviceLiveState.sequence ?: "—"}" +
+                            if (gyroFollowEnabled && deviceLiveState.orientation != null) " · 陀螺仪跟随" else "",
+                        fontSize = 11.sp,
+                        color = CubeTraceColors.muted
+                    )
+                }
+            }
+        }
+        Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(if (wide) 16.dp else 0.dp)) {
+            if (wide) {
+                WorkbenchCard(
+                    modifier = Modifier.weight(1f).fillMaxHeight().padding(start = 16.dp, bottom = floatingNavigationClearance()),
+                    shape = RoundedCornerShape(24.dp)
+                ) {
+                    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.Center) {
+                        cubePanel()
+                    }
+                }
+            }
     Column(
         modifier = Modifier
-            .fillMaxSize()
+            .weight(1f).fillMaxHeight()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = if (solvingFocus) 10.dp else 16.dp)
             .padding(bottom = floatingNavigationClearance())
     ) {
-        if (solvingFocus) {
+        if (solvingFocus || wide) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 4.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -2320,12 +2497,12 @@ private fun TimerScreen(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        if (timer.phase == TimerPhase.RUNNING) "正在还原" else "还原完成",
+                        if (timer.phase == TimerPhase.RUNNING) "正在还原" else if (timer.phase == TimerPhase.STOPPED) "还原完成" else "专注这一把",
                         fontSize = 18.sp,
                         fontWeight = FontWeight.SemiBold
                     )
                     Text(
-                        "智能魔方实时状态 · ${smartCubeFrame.label}",
+                        "${if (smartCubeAvailable) "智能魔方" else "自由练习"} · ${smartCubeFrame.label}",
                         fontSize = 12.sp,
                         color = CubeTraceColors.muted
                     )
@@ -2347,6 +2524,9 @@ private fun TimerScreen(
             }
         }
 
+        if (wide && !smartInspectionFocus) {
+            TimerClock(timerClock, smartTimerActive, focusMode = true, onPrepare = onPrepare, onToggle = onToggle)
+        }
         if (smartInspectionFocus && preSolveTargetVisible) {
             PreSolveTargetCard(preSolveTargets)
         }
@@ -2399,7 +2579,7 @@ private fun TimerScreen(
                     )
                 }
 
-                if (solvingFocus) {
+                if (solvingFocus && !wide) {
                     TimerClock(
                         timerClock = timerClock,
                         smartTimerActive = smartTimerActive,
@@ -2420,37 +2600,8 @@ private fun TimerScreen(
                     Spacer(Modifier.height(10.dp))
                 }
 
-                Text(
-                    text = if (liveFacelets != null) "智能魔方实时局面" else "打乱局面预览",
-                    fontSize = if (solvingFocus) 13.sp else 12.sp,
-                    fontWeight = if (solvingFocus) FontWeight.Medium else FontWeight.Normal,
-                    color = if (liveFacelets != null) CubeTraceColors.track else CubeTraceColors.muted,
-                    modifier = Modifier.padding(top = if (solvingFocus) 2.dp else 10.dp)
-                )
-                Cube3DView(
-                    facelets = displayFacelets,
-                    animationFromFacelets = deviceLiveState.animationFromFacelets,
-                    animateMove = if (liveFacelets != null) deviceLiveState.lastMove else null,
-                    animationKey = deviceLiveState.sequence ?: 0,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(if (solvingFocus) 300.dp else 178.dp)
-                        .clipToBounds(),
-                    sceneOrientation = null,
-                    sceneOrientationFlow = if (liveFacelets != null && gyroFollowEnabled) deviceOrientation else null,
-                    modelScale = if (solvingFocus) 0.94f else 0.74f,
-                    animationSpeed = if (liveFacelets != null) 2f else 1f,
-                    cubeFrame = smartCubeFrame
-                )
-                if (liveFacelets != null) {
-                    Text(
-                        text = "已同步 · 局面序号 ${deviceLiveState.sequence ?: "—"}" +
-                            if (gyroFollowEnabled && deviceLiveState.orientation != null) " · 陀螺仪跟随" else "",
-                        fontSize = 11.sp,
-                        color = CubeTraceColors.muted
-                    )
-                }
-                if (!solvingFocus && !smartInspectionFocus) {
+                if (!wide) cubePanel()
+                if (!wide && !solvingFocus && !smartInspectionFocus) {
                     Spacer(Modifier.height(22.dp))
                     TimerClock(
                         timerClock = timerClock,
@@ -2525,6 +2676,8 @@ private fun TimerScreen(
                 else -> "设备连接状态：${deviceStatus::class.simpleName}"
             }
             Text(statusText, fontSize = 12.sp, color = CubeTraceColors.muted, modifier = Modifier.padding(bottom = 16.dp))
+        }
+    }
         }
     }
     if (customScrambleOpen) {
@@ -3035,6 +3188,8 @@ private fun SmartScrambleStatusBanner(
 
 @Composable
 private fun RecordsScreen(
+    compact: Boolean = false,
+    selectedSolveId: String? = null,
     solves: List<SolveRecord>,
     pauseThreshold: Int,
     dashboard: RecordsDashboardState,
@@ -3042,6 +3197,7 @@ private fun RecordsScreen(
     onOpenSolve: (SolveRecord) -> Unit,
     onExport: () -> Unit
 ) {
+    var showOverview by remember { mutableStateOf(false) }
     val stats = dashboard.stats
     val rolling = dashboard.rolling
     LazyColumn(
@@ -3049,6 +3205,17 @@ private fun RecordsScreen(
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = floatingNavigationClearance())
     ) {
         item(key = "records-header") {
+            if (compact) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Column {
+                        SectionEyebrow("还原手记 · ${solves.size} 次")
+                        Text("成绩与复盘", fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                    TextButton(onClick = onExport) { Text("备份") }
+                }
+                TextButton(onClick = { showOverview = !showOverview }) { Text(if (showOverview) "收起统计概览" else "查看统计与趋势") }
+            }
+            if (!compact || showOverview) {
             WorkbenchBanner("看见自己的进步", "回看动作与停顿，找到下一次的突破口。", "还原手记 · ${solves.size} 次记录")
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Column { SectionEyebrow("主会话") ; Text("成绩与复盘", fontSize = 22.sp, fontWeight = FontWeight.SemiBold) }
@@ -3091,6 +3258,7 @@ private fun RecordsScreen(
                 MetricText("停顿阈值", "$pauseThreshold ms")
             }
             Spacer(Modifier.height(20.dp))
+            }
             SectionRule("最近还原")
         }
         if (solves.isEmpty()) {
@@ -3099,7 +3267,14 @@ private fun RecordsScreen(
             }
         } else {
             items(items = solves, key = { it.id }) { solve ->
-                SolveRow(solve, onClick = { onOpenSolve(solve) })
+                Surface(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    color = Color.Transparent,
+                    border = if (compact && selectedSolveId == solve.id) androidx.compose.foundation.BorderStroke(2.dp, CubeTraceColors.track) else null
+                ) {
+                    Column { SolveRow(solve, onClick = { onOpenSolve(solve) }) }
+                }
             }
         }
     }
@@ -3710,15 +3885,93 @@ private fun CaseDetailDialog(
         }
         demoPlaying = false
     }
-    DialogSurface(onDismiss) {
-        Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
-                Column { SectionEyebrow(item.stage.label) ; Text(item.name, fontSize = 24.sp, fontWeight = FontWeight.SemiBold) ; Text(item.alias, fontSize = 13.sp, color = CubeTraceColors.muted) }
-                Row { IconButton(onClick = onFavorite) { Text(if (item.favorite) "★" else "☆", color = CubeTraceColors.signal, fontSize = 24.sp) }; TextButton(onClick = onDismiss) { Text("关闭") } }
+    val header: @Composable () -> Unit = {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
+            Column { SectionEyebrow(item.stage.label) ; Text(item.name, fontSize = 24.sp, fontWeight = FontWeight.SemiBold) ; Text(item.alias, fontSize = 13.sp, color = CubeTraceColors.muted) }
+            Row { IconButton(onClick = onFavorite) { Text(if (item.favorite) "★" else "☆", color = CubeTraceColors.signal, fontSize = 24.sp) }; TextButton(onClick = onDismiss) { Text("关闭") } }
+        }
+    }
+    val referencePreview: @Composable () -> Unit = {
+        Box(modifier = Modifier.fillMaxWidth().height(260.dp), contentAlignment = Alignment.Center) {
+            CaseStatePreview(item.stage, item.canonicalState, Modifier.size(245.dp), assistLabels)
+        }
+    }
+    val demoCube: @Composable (androidx.compose.ui.unit.Dp) -> Unit = { cubeHeight ->
+        Cube3DView(
+            facelets = demoFacelets,
+            animationFromFacelets = demoFrame.animationFromFacelets,
+            modifier = Modifier.fillMaxWidth().height(cubeHeight),
+            animateMove = activeMove,
+            animationKey = demoStep,
+            reducedMotion = reducedMotion,
+            focusF2L = item.stage == Stage.F2L,
+            focusFacelets = if (item.stage == Stage.F2L) item.canonicalState else null,
+            animationSpeed = demoSpeed,
+            interactiveView = true,
+            resetViewKey = demoViewResetKey
+        )
+    }
+    val demoPanel: @Composable (Boolean, androidx.compose.ui.unit.Dp) -> Unit = { includeCube, cubeHeight ->
+        if (demoOpen) {
+            WorkbenchCard(
+                colors = CardDefaults.cardColors(containerColor = CubeTraceColors.paper),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
+            ) {
+                Column(modifier = Modifier.fillMaxWidth().padding(10.dp)) {
+                    if (includeCube) demoCube(cubeHeight)
+                    ViewOrbitControls { demoViewResetKey++ }
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("播放速度", fontSize = 12.sp, color = CubeTraceColors.muted)
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf(0.5f, 1f).forEach { speed ->
+                                FilterChip(
+                                    selected = demoSpeed == speed,
+                                    onClick = { demoSpeed = speed },
+                                    label = { Text(if (speed == 0.5f) "0.5×" else "1×", fontSize = 12.sp) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = CubeTraceColors.track,
+                                        selectedLabelColor = Color.White,
+                                        containerColor = CubeTraceColors.trackSoft,
+                                        labelColor = CubeTraceColors.graphite
+                                    )
+                                )
+                            }
+                        }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "第 ${demoStep.coerceAtMost(demoMoves.size)} / ${demoMoves.size} 步",
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 12.sp,
+                            color = CubeTraceColors.muted
+                        )
+                        Row {
+                            TextButton(onClick = {
+                                demoPlaying = false
+                                demoFrame = DemoFrame(facelets = item.canonicalState, step = 0)
+                            }) { Text("重置") }
+                            TextButton(onClick = {
+                                if (demoStep >= demoMoves.size) {
+                                    demoFrame = DemoFrame(facelets = item.canonicalState, step = 0)
+                                }
+                                demoPlaying = !demoPlaying
+                            }) { Text(if (demoPlaying) "暂停" else "播放") }
+                        }
+                    }
+                }
             }
-            Box(modifier = Modifier.fillMaxWidth().height(260.dp), contentAlignment = Alignment.Center) {
-                CaseStatePreview(item.stage, item.canonicalState, Modifier.size(245.dp), assistLabels)
-            }
+        }
+    }
+    val details: @Composable (Boolean, Boolean) -> Unit = { includeDemoCube, tablet ->
             SectionRule("首选公式")
             MoveTokenRow(item.variant.notation, wrap = true)
             PracticeScramblePanel(item, onTrain)
@@ -3734,76 +3987,7 @@ private fun CaseDetailDialog(
             ) {
                 Text(if (demoPlaying) "暂停三维演示" else "播放三维演示公式")
             }
-            if (demoOpen) {
-                WorkbenchCard(
-                    colors = CardDefaults.cardColors(containerColor = CubeTraceColors.paper),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
-                ) {
-                    Column(modifier = Modifier.fillMaxWidth().padding(10.dp)) {
-                        Cube3DView(
-                             facelets = demoFacelets,
-                             animationFromFacelets = demoFrame.animationFromFacelets,
-                             modifier = Modifier.fillMaxWidth().height(220.dp),
-                            animateMove = activeMove,
-                            animationKey = demoStep,
-                            reducedMotion = reducedMotion,
-                            focusF2L = item.stage == Stage.F2L,
-                            focusFacelets = if (item.stage == Stage.F2L) item.canonicalState else null,
-                            animationSpeed = demoSpeed,
-                            interactiveView = true,
-                            resetViewKey = demoViewResetKey
-                        )
-                        ViewOrbitControls { demoViewResetKey++ }
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("播放速度", fontSize = 12.sp, color = CubeTraceColors.muted)
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                listOf(0.5f, 1f).forEach { speed ->
-                                    FilterChip(
-                                        selected = demoSpeed == speed,
-                                        onClick = { demoSpeed = speed },
-                                        label = { Text(if (speed == 0.5f) "0.5×" else "1×", fontSize = 12.sp) },
-                                        colors = FilterChipDefaults.filterChipColors(
-                                            selectedContainerColor = CubeTraceColors.track,
-                                            selectedLabelColor = Color.White,
-                                            containerColor = CubeTraceColors.trackSoft,
-                                            labelColor = CubeTraceColors.graphite
-                                        )
-                                    )
-                                }
-                            }
-                        }
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                "第 ${demoStep.coerceAtMost(demoMoves.size)} / ${demoMoves.size} 步",
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 12.sp,
-                                color = CubeTraceColors.muted
-                            )
-                            Row {
-                                TextButton(onClick = {
-                                    demoPlaying = false
-                                    demoFrame = DemoFrame(facelets = item.canonicalState, step = 0)
-                                }) { Text("重置") }
-                                TextButton(onClick = {
-                                    if (demoStep >= demoMoves.size) {
-                                        demoFrame = DemoFrame(facelets = item.canonicalState, step = 0)
-                                    }
-                                    demoPlaying = !demoPlaying
-                                }) { Text(if (demoPlaying) "暂停" else "播放") }
-                            }
-                        }
-                    }
-                }
-            }
+            demoPanel(includeDemoCube, if (tablet) 300.dp else 220.dp)
             Row(modifier = Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 AssistChip(onClick = {}, label = { Text(if (item.variant.verified) "已校验" else "未校验") })
                 AssistChip(onClick = {}, label = { Text(item.variant.sourceType) })
@@ -3946,12 +4130,80 @@ private fun CaseDetailDialog(
             TextButton(onClick = { onNotes(notes) }) { Text("保存笔记") }
             Spacer(Modifier.height(8.dp))
             WorkbenchButton(onClick = onTrain, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text("练这个案例") }
+    }
+    DialogSurface(onDismiss) {
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val tabletLandscape = maxWidth >= 840.dp && maxWidth > maxHeight
+            if (tabletLandscape) {
+                Row(
+                    modifier = Modifier.fillMaxSize().padding(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    WorkbenchCard(
+                        modifier = Modifier.weight(0.9f).fillMaxHeight(),
+                        shape = RoundedCornerShape(22.dp),
+                        colors = CardDefaults.cardColors(containerColor = CubeTraceColors.paper)
+                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxSize().padding(14.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                if (demoOpen) "公式三维演示" else "当前局面",
+                                color = CubeTraceColors.track,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(item.name, fontSize = 20.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 4.dp))
+                            Text(item.alias, fontSize = 12.sp, color = CubeTraceColors.muted)
+                            BoxWithConstraints(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                                val visualSize = minOf(maxWidth, maxHeight).coerceAtMost(320.dp).coerceAtLeast(1.dp)
+                                if (demoOpen) {
+                                    demoCube(visualSize)
+                                } else {
+                                    CaseStatePreview(
+                                        item.stage,
+                                        item.canonicalState,
+                                        Modifier.size(visualSize.coerceAtMost(280.dp)),
+                                        assistLabels
+                                    )
+                                }
+                            }
+                            Text(
+                                if (demoOpen) "演示局面固定在左侧；右侧可继续滚动查看公式与操作。" else item.orientationRule,
+                                fontSize = 12.sp,
+                                color = CubeTraceColors.muted,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(top = 8.dp)
+                            )
+                        }
+                    }
+                    Column(
+                        modifier = Modifier.weight(1.1f).fillMaxHeight().verticalScroll(rememberScrollState())
+                    ) {
+                        header()
+                        details(false, true)
+                    }
+                }
+            } else {
+                Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
+                    header()
+                    referencePreview()
+                    details(true, false)
+                }
+            }
         }
     }
 }
 
 @Composable
+private fun ReviewSurface(embedded: Boolean, onDismiss: () -> Unit, content: @Composable () -> Unit) {
+    if (embedded) content() else DialogSurface(onDismiss, content)
+}
+
+@Composable
 private fun SolveReviewDialog(
+    embedded: Boolean = false,
     solve: SolveRecord,
     pauseThreshold: Int,
     assistLabels: Boolean,
@@ -3971,8 +4223,27 @@ private fun SolveReviewDialog(
             if (success) confirmPractice = false
         }
     }
-    DialogSurface(onDismiss) {
-        Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
+    ReviewSurface(embedded, onDismiss) {
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val wide = maxWidth >= 840.dp && maxWidth > maxHeight
+            val replayPanel: @Composable () -> Unit = {
+            Spacer(Modifier.height(18.dp))
+            SectionRule("全程三维还原")
+            SolveReplay3DModule(
+                solveId = solve.id,
+                analysis = analysis,
+                loading = review.loading,
+                reducedMotion = reducedMotion
+            )
+
+            }
+            Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(if (wide) 16.dp else 0.dp)) {
+                if (wide) {
+                    Column(Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()).padding(16.dp)) {
+                        replayPanel()
+                    }
+                }
+        Column(modifier = Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()).padding(16.dp)) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Column { SectionEyebrow("复盘 / ${solve.source.label}") ; Text("还原复盘", fontSize = 24.sp, fontWeight = FontWeight.SemiBold) }
                 TextButton(onClick = onDismiss) { Text("关闭") }
@@ -4044,14 +4315,7 @@ private fun SolveReviewDialog(
             Spacer(Modifier.height(18.dp))
             SectionRule("转体识别")
             RotationSummary(solve)
-            Spacer(Modifier.height(18.dp))
-            SectionRule("全程三维还原")
-            SolveReplay3DModule(
-                solveId = solve.id,
-                analysis = analysis,
-                loading = review.loading,
-                reducedMotion = reducedMotion
-            )
+            if (!wide) replayPanel()
 
             Spacer(Modifier.height(18.dp))
             SectionRule("本次分析与提速建议")
@@ -4110,6 +4374,8 @@ private fun SolveReviewDialog(
             }
             Spacer(Modifier.height(18.dp))
             Text("当前记录为 ${if (solve.completeness == Completeness.COMPLETE) "完整" else "不完整"}。停顿率按设置中的 ${pauseThreshold} ms 阈值计算，分析结果可从动作记录重新生成。", fontSize = 13.sp, color = CubeTraceColors.muted)
+        }
+    }
         }
     }
     if (confirmPractice) {
@@ -5036,7 +5302,7 @@ private fun DialogSurface(onDismiss: () -> Unit, content: @Composable () -> Unit
         properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = !tablet)
     ) {
         val surfaceModifier = if (tablet) {
-            Modifier.fillMaxHeight(0.92f).widthIn(max = 1100.dp).fillMaxWidth(0.9f)
+            Modifier.fillMaxHeight(0.94f).widthIn(max = 1440.dp).fillMaxWidth(0.94f)
         } else {
             Modifier.fillMaxWidth().fillMaxSize(0.94f)
         }

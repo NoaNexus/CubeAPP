@@ -7,6 +7,7 @@
 - Kotlin + Jetpack Compose 原生 Android 工程，`minSdk 26`。
 - 不声明 `INTERNET`；公式、训练、计时、记录和备份全部本地运行。
 - 四个固定一级入口：公式、训练、计时、记录。
+- 横屏平板支持左右分栏：计时左魔方右时间，训练与公式详情左局面右操作，记录左成绩列表右复盘；窄窗口自动回到单栏。
 - 公式详情与识别训练提供可复制的对应练习打乱；每条打乱均校验与案例图局面一致。
 - 三维复盘支持真实节奏和匀速观察，可按动作时间轴保留停顿、暂停续播、拖动定位及 0.5× / 1× / 2× 倍速。
 - 119 个稳定 ID 的本地 CFOP 索引（41 F2L / 57 OLL / 21 PLL），统一使用黄顶蓝前；F2L/OLL 使用目录显式 setup，PLL 由公式与参考帧生成，九宫格和三维演示共用同一状态。
@@ -51,4 +52,4 @@ app/src/main/java/com/cubetrace/app/
    └─ model/        领域实体、统计与展示口径
 ```
 
-当前验收范围与后续硬件验证见 `docs/implementation-status.md`；0.4.0 发布记录见 `docs/releases/0.4.0.md`。
+当前验收范围与后续硬件验证见 `docs/implementation-status.md`；0.4.2 发布记录见 `docs/releases/0.4.2.md`。
