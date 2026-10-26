@@ -2436,9 +2436,25 @@ private fun TimerScreen(
         }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = maxWidth >= 840.dp && maxWidth > maxHeight
+        // Short solving/inspection content must not clamp the next scramble's scroll offset.
+        val scrambleScroll = rememberScrollState()
+        val solvingScroll = rememberScrollState()
+        val inspectionScroll = rememberScrollState()
+        val phoneScroll = rememberScrollState()
+        val rightScroll = if (!wide) phoneScroll else when {
+            solvingFocus -> solvingScroll
+            smartInspectionFocus -> inspectionScroll
+            else -> scrambleScroll
+        }
         val landscapeCubeHeight = (maxHeight - 160.dp).coerceIn(220.dp, 440.dp)
         val cubePanel: @Composable () -> Unit = {
             Column(Modifier.fillMaxWidth().padding(if (wide) 20.dp else 0.dp)) {
+                if (wide) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Text(smartCubeFrame.label, fontSize = 12.sp, color = CubeTraceColors.muted)
+                        TextButton(onClick = onDevice) { Text("设备") }
+                    }
+                }
                 Text(
                     text = if (liveFacelets != null) "智能魔方实时局面" else "打乱局面预览",
                     fontSize = if (solvingFocus) 13.sp else 12.sp,
@@ -2485,11 +2501,12 @@ private fun TimerScreen(
     Column(
         modifier = Modifier
             .weight(1f).fillMaxHeight()
-            .verticalScroll(rememberScrollState())
+            .padding(bottom = if (wide) floatingNavigationClearance() else 0.dp)
+            .verticalScroll(rightScroll)
             .padding(horizontal = if (solvingFocus) 10.dp else 16.dp)
-            .padding(bottom = floatingNavigationClearance())
+            .padding(bottom = if (wide) 16.dp else floatingNavigationClearance())
     ) {
-        if (solvingFocus || wide) {
+        if (!wide && solvingFocus) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 4.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -2509,7 +2526,7 @@ private fun TimerScreen(
                 }
                 TextButton(onClick = onDevice) { Text("设备") }
             }
-        } else {
+        } else if (!wide) {
             WorkbenchBanner("专注这一把", "准备好魔方，让每一次进步留下记录。", "计时台 · 离线记录")
             Row(
                 modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
@@ -2525,7 +2542,7 @@ private fun TimerScreen(
         }
 
         if (wide && !smartInspectionFocus) {
-            TimerClock(timerClock, smartTimerActive, focusMode = true, onPrepare = onPrepare, onToggle = onToggle)
+            TimerClock(timerClock, smartTimerActive, focusMode = solvingFocus, onPrepare = onPrepare, onToggle = onToggle)
         }
         if (smartInspectionFocus && preSolveTargetVisible) {
             PreSolveTargetCard(preSolveTargets)

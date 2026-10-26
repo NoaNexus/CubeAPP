@@ -52,4 +52,4 @@ app/src/main/java/com/cubetrace/app/
    └─ model/        领域实体、统计与展示口径
 ```
 
-当前验收范围与后续硬件验证见 `docs/implementation-status.md`；0.4.2 发布记录见 `docs/releases/0.4.2.md`。
+当前验收范围与后续硬件验证见 `docs/implementation-status.md`；0.4.3 发布记录见 `docs/releases/0.4.3.md`。
